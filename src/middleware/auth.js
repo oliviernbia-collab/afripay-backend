@@ -26,4 +26,15 @@ function requireType(...types) {
   };
 }
 
-module.exports = { authenticate, requireType };
+// Restreint l'accès à un ou plusieurs rôles admin ('super_admin', 'conformite', 'support').
+// N'a de sens qu'après `requireType('admin')`.
+function requireRole(...roles) {
+  return (req, res, next) => {
+    if (!req.auth || !roles.includes(req.auth.role)) {
+      return next(new ApiError(403, 'Rôle insuffisant pour cette action'));
+    }
+    next();
+  };
+}
+
+module.exports = { authenticate, requireType, requireRole };

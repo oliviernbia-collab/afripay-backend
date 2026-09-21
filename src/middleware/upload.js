@@ -2,6 +2,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
+const ApiError = require('../utils/ApiError');
 
 const uploadDir = path.join(__dirname, '..', '..', 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
@@ -22,9 +23,22 @@ const upload = multer({
   limits: { fileSize: 8 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const allowed = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
-    if (!allowed.includes(file.mimetype)) return cb(new Error('Format de fichier non autorisé'));
+    if (!allowed.includes(file.mimetype)) return cb(new ApiError(400, 'Format de fichier non autorisé'));
     cb(null, true);
   },
 });
 
-module.exports = { upload, uploadDir };
+// Variante dédiée aux photos de profil : images uniquement (pas de PDF), fichier plus petit.
+const uploadPhoto = multer({
+  storage,
+  limits: { fileSize: 4 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = ['image/jpeg', 'image/png', 'image/webp'];
+    if (!allowed.includes(file.mimetype)) {
+      return cb(new ApiError(400, 'Format de fichier non autorisé (JPEG, PNG ou WebP uniquement)'));
+    }
+    cb(null, true);
+  },
+});
+
+module.exports = { upload, uploadPhoto, uploadDir };

@@ -162,8 +162,12 @@ async function refresh(req, res, next) {
     const { refreshToken } = req.body;
     if (!refreshToken) throw new ApiError(400, 'refreshToken requis');
     const payload = verifyRefreshToken(refreshToken);
-    const tokens = issueTokens(payload.id, payload.type);
-    ok(res, tokens);
+    // Pour un compte admin, le rôle (et le nom, utilisé dans le journal d'audit) doivent être
+    // reconduits, sinon un accessToken rafraîchi perdrait ses droits (requireRole).
+    const extra = payload.type === 'admin' ? { role: payload.role, nom: payload.nom } : {};
+    const accessToken = signAccessToken({ id: payload.id, type: payload.type, ...extra });
+    const newRefreshToken = signRefreshToken({ id: payload.id, type: payload.type, ...extra });
+    ok(res, { accessToken, refreshToken: newRefreshToken });
   } catch (e) {
     next(new ApiError(401, 'Refresh token invalide ou expiré'));
   }
