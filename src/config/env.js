@@ -20,6 +20,13 @@ module.exports = {
     kycRechargeCapFcfa: Number(process.env.KYC_RECHARGE_CAP_FCFA || 10000),
     pinConfirmThresholdFcfa: Number(process.env.PIN_CONFIRM_THRESHOLD_FCFA || 50000),
   },
+  security: {
+    // Blocage automatique après échecs répétés (exigence 9.1) : au-delà de
+    // maxFailedAttempts échecs sur la fenêtre lockoutMinutes, le compte est
+    // temporairement bloqué pour l'événement concerné (connexion, PIN).
+    maxFailedAttempts: Number(process.env.SECURITY_MAX_FAILED_ATTEMPTS || 5),
+    lockoutMinutes: Number(process.env.SECURITY_LOCKOUT_MINUTES || 15),
+  },
   otp: {
     expiresMin: Number(process.env.OTP_EXPIRES_MIN || 5),
     devEcho: (process.env.OTP_DEV_ECHO || 'true') === 'true',

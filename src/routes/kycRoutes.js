@@ -1,12 +1,20 @@
 const express = require('express');
 const kycController = require('../controllers/kycController');
 const { authenticate, requireType } = require('../middleware/auth');
-const { upload } = require('../middleware/upload');
+const { upload, uploadPhoto } = require('../middleware/upload');
 
 const router = express.Router();
 
 router.get('/client/statut', authenticate, requireType('client'), kycController.myKycStatus);
 router.post('/client/informations', authenticate, requireType('client'), kycController.submitPersonalInfo);
+router.post(
+  '/client/photo',
+  authenticate,
+  requireType('client'),
+  uploadPhoto.single('photo'),
+  kycController.uploadMyPhoto
+);
+router.delete('/client/photo', authenticate, requireType('client'), kycController.removeMyPhoto);
 router.post(
   '/client/documents',
   authenticate,

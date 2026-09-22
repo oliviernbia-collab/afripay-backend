@@ -4,6 +4,7 @@ const { randomReference } = require('../utils/crypto');
 const walletService = require('./walletService');
 const transactionService = require('./transactionService');
 const kycService = require('./kycService');
+const paymentMethodService = require('./paymentMethodService');
 
 const VALID_PROVIDERS = ['wave', 'orange_money', 'moov_money', 'mtn_money', 'djamo', 'visa'];
 
@@ -24,8 +25,16 @@ async function simulateProviderCharge(fournisseur, montant) {
   return { statut: 'réussi', référenceExterne: randomReference(fournisseur.toUpperCase()) };
 }
 
-async function rechargeWallet({ user, fournisseur, montant }) {
+async function rechargeWallet({ user, fournisseur, montant, moyenPaiementId }) {
   await kycService.assertRechargeAllowed(user, montant);
+
+  // Ne rattache le moyen de paiement que s'il appartient bien à l'utilisateur — sinon on l'ignore
+  // silencieusement plutôt que de faire échouer toute la recharge pour un id invalide/périmé.
+  let safeMoyenPaiementId = null;
+  if (moyenPaiementId) {
+    const method = await paymentMethodService.findById(moyenPaiementId);
+    if (method && method.user_id === user.id) safeMoyenPaiementId = moyenPaiementId;
+  }
 
   const wallet = await walletService.getWalletByOwner(user.id, 'client');
   const { statut, référenceExterne } = await simulateProviderCharge(fournisseur, montant);
@@ -42,9 +51,18 @@ async function rechargeWallet({ user, fournisseur, montant }) {
 
   const rechargeId = uuidv4();
   await query(
-    `INSERT INTO recharge_providers (id, user_id, transaction_id, fournisseur, référence_externe, montant, statut)
-     VALUES (:id, :userId, :transactionId, :fournisseur, :refExterne, :montant, :statut)`,
-    { id: rechargeId, userId: user.id, transactionId: transaction.id, fournisseur, refExterne: référenceExterne, montant, statut }
+    `INSERT INTO recharge_providers (id, user_id, transaction_id, moyen_paiement_id, fournisseur, référence_externe, montant, statut)
+     VALUES (:id, :userId, :transactionId, :moyenPaiementId, :fournisseur, :refExterne, :montant, :statut)`,
+    {
+      id: rechargeId,
+      userId: user.id,
+      transactionId: transaction.id,
+      moyenPaiementId: safeMoyenPaiementId,
+      fournisseur,
+      refExterne: référenceExterne,
+      montant,
+      statut,
+    }
   );
 
   if (statut === 'réussi') {

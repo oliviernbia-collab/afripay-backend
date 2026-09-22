@@ -6,15 +6,38 @@ const merchantService = require('../services/merchantService');
 const walletService = require('../services/walletService');
 const transferService = require('../services/transferService');
 const notificationService = require('../services/notificationService');
+const securityEventService = require('../services/securityEventService');
 const env = require('../config/env');
 
-async function assertPinIfNeeded(auth, montant, pin) {
+async function assertPinIfNeeded(auth, montant, pin, req) {
   const threshold = env.business.pinConfirmThresholdFcfa;
   if (Number(montant) < threshold) return;
   if (!pin) throw new ApiError(400, `Code PIN requis pour les opérations à partir de ${threshold} FCFA`);
 
   const account = auth.type === 'marchand' ? await merchantService.findById(auth.id) : await userService.findById(auth.id);
+  const acteurType = auth.type === 'marchand' ? 'marchand' : 'client';
+
+  // Blocage automatique après échecs répétés (exigence 9.1), par compte plutôt que par
+  // téléphone ici puisque l'appelant est déjà authentifié (JWT) — acteur_id est fiable.
+  const failures = await securityEventService.countRecentFailures({
+    telephone: account.telephone,
+    evenement: 'pin_transaction',
+    sinceMinutes: env.security.lockoutMinutes,
+  });
+  if (failures >= env.security.maxFailedAttempts) {
+    throw new ApiError(429, `Trop de tentatives de code PIN échouées. Réessayez dans ${env.security.lockoutMinutes} minutes.`);
+  }
+
   const validPin = await compare(pin, account.code_pin_hash);
+  await securityEventService.log({
+    acteurType,
+    acteurId: auth.id,
+    telephone: account.telephone,
+    evenement: 'pin_transaction',
+    resultat: validPin ? 'succes' : 'echec',
+    détails: `montant:${montant}`,
+    ip: req?.ip,
+  });
   if (!validPin) throw new ApiError(401, 'Code PIN incorrect');
 }
 
@@ -25,7 +48,7 @@ async function transferToAfripayAccount(req, res, next) {
     if (!telephoneDestinataire || !montant || Number(montant) <= 0) {
       throw new ApiError(400, 'telephoneDestinataire et montant (>0) sont requis');
     }
-    await assertPinIfNeeded(req.auth, montant, pin);
+    await assertPinIfNeeded(req.auth, montant, pin, req);
 
     const fromOwnerType = req.auth.type === 'marchand' ? 'marchand' : 'client';
     const fromWallet = await walletService.getWalletByOwner(req.auth.id, fromOwnerType);
@@ -75,7 +98,7 @@ async function transferToExternal(req, res, next) {
     if (!opérateurDestination || !numéroDestinataire || !montant || Number(montant) <= 0) {
       throw new ApiError(400, 'opérateurDestination, numéroDestinataire et montant (>0) sont requis');
     }
-    await assertPinIfNeeded(req.auth, montant, pin);
+    await assertPinIfNeeded(req.auth, montant, pin, req);
 
     const merchant = await merchantService.findById(req.auth.id);
     const result = await transferService.externalTransfer({

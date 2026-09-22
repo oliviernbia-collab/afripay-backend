@@ -1,12 +1,24 @@
+const path = require('path');
+const fs = require('fs');
 const ApiError = require('../utils/ApiError');
 const { ok } = require('../utils/response');
 const userService = require('../services/userService');
 const merchantService = require('../services/merchantService');
 const kycService = require('../services/kycService');
 const notificationService = require('../services/notificationService');
+const securityEventService = require('../services/securityEventService');
+const { uploadDir } = require('../middleware/upload');
 
 const CLIENT_DOC_TYPES = ['cni', 'passeport', 'carte_sejour', 'selfie'];
 const MERCHANT_DOC_TYPES = ['cni', 'passeport', 'carte_sejour', 'selfie', 'rccm', 'ncc', 'justificatif_domicile', 'justificatif_activite'];
+
+function deleteUploadedFile(photoUrl) {
+  if (!photoUrl || !photoUrl.startsWith('/uploads/')) return;
+  const filePath = path.join(uploadDir, photoUrl.replace('/uploads/', ''));
+  fs.unlink(filePath, (err) => {
+    if (err && err.code !== 'ENOENT') console.error('[profil] échec suppression ancienne photo:', err.message);
+  });
+}
 
 async function uploadClientDocument(req, res, next) {
   try {
@@ -67,6 +79,65 @@ async function submitPersonalInfo(req, res, next) {
       date_naissance: dateNaissance,
       adresse,
     });
+    await securityEventService.log({
+      acteurType: 'client',
+      acteurId: req.auth.id,
+      telephone: updated.telephone,
+      evenement: 'profil_maj',
+      resultat: 'succes',
+      détails: 'informations_personnelles',
+      ip: req.ip,
+    });
+    ok(res, userService.toPublic(updated));
+  } catch (e) {
+    next(e);
+  }
+}
+
+// Photo de profil client (cahier des charges 5.6 "Gestion du profil (nom, téléphone, e-mail,
+// photo)") — même schéma que la photo de profil admin.
+async function uploadMyPhoto(req, res, next) {
+  try {
+    if (!req.file) throw new ApiError(400, 'Fichier requis (champ "photo")');
+
+    const user = await userService.findById(req.auth.id);
+    const photoUrl = `/uploads/${req.file.filename}`;
+    const updated = await userService.updateProfile(req.auth.id, { photo_url: photoUrl });
+
+    deleteUploadedFile(user?.photo_url);
+
+    await securityEventService.log({
+      acteurType: 'client',
+      acteurId: req.auth.id,
+      telephone: updated.telephone,
+      evenement: 'profil_maj',
+      resultat: 'succes',
+      détails: 'photo',
+      ip: req.ip,
+    });
+
+    ok(res, userService.toPublic(updated));
+  } catch (e) {
+    next(e);
+  }
+}
+
+async function removeMyPhoto(req, res, next) {
+  try {
+    const user = await userService.findById(req.auth.id);
+    const updated = await userService.updateProfile(req.auth.id, { photo_url: null });
+    deleteUploadedFile(user?.photo_url);
+
+    await securityEventService.log({
+      acteurType: 'client',
+      acteurId: req.auth.id,
+      telephone: updated.telephone,
+      evenement: 'profil_maj',
+      resultat: 'succes',
+      détails: 'photo_supprimée',
+      ip: req.ip,
+    });
+
     ok(res, userService.toPublic(updated));
   } catch (e) {
     next(e);
@@ -89,5 +160,7 @@ module.exports = {
   myClientDocuments,
   myMerchantDocuments,
   submitPersonalInfo,
+  uploadMyPhoto,
+  removeMyPhoto,
   myKycStatus,
 };

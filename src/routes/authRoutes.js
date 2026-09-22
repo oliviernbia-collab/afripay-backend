@@ -19,5 +19,7 @@ router.post('/marchand/pin', authenticate, authController.merchantSetPin);
 // Commun
 router.post('/refresh', authController.refresh);
 router.get('/me', authenticate, authController.me);
+router.get('/sessions', authenticate, authController.listMySessions);
+router.delete('/sessions/:id', authenticate, authController.revokeMySession);
 
 module.exports = router;

@@ -99,7 +99,7 @@ async function listMerchants({ statutKyb, search, dateDebut, dateFin, limit = 50
   );
 }
 
-async function listTransactions({ type, statut, dateDebut, dateFin, limit = 50, offset = 0 } = {}) {
+async function listTransactions({ type, statut, dateDebut, dateFin, typeCompte, limit = 50, offset = 0 } = {}) {
   const { dateDebut: debut, dateFin: fin } = normalizeDateRange({ dateDebut, dateFin });
   const conditions = [];
   const params = { limit, offset };
@@ -118,6 +118,15 @@ async function listTransactions({ type, statut, dateDebut, dateFin, limit = 50, 
   if (fin) {
     conditions.push('date_heure <= :dateFin');
     params.dateFin = fin;
+  }
+  if (typeCompte === 'client' || typeCompte === 'marchand') {
+    // Une transaction touche le compte s'il en est la source OU la destination
+    // (ex. un achat a un client source et un marchand destination : elle est
+    // pertinente pour les deux filtres).
+    conditions.push(
+      `EXISTS (SELECT 1 FROM wallets w WHERE w.id IN (transactions.wallet_source_id, transactions.wallet_destination_id) AND w.type_propriétaire = :typeCompte)`
+    );
+    params.typeCompte = typeCompte;
   }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   return query(`SELECT * FROM transactions ${where} ORDER BY date_heure DESC LIMIT :limit OFFSET :offset`, params);
@@ -243,7 +252,11 @@ async function walletsTotals() {
 // ---------------------------------------------------------------------
 // Recharges (section "Recharges")
 // ---------------------------------------------------------------------
-async function listRecharges({ fournisseur, statut, dateDebut, dateFin, limit = 50, offset = 0 } = {}) {
+async function listRecharges({ fournisseur, statut, dateDebut, dateFin, type, limit = 50, offset = 0 } = {}) {
+  // Les recharges ne concernent que les portefeuilles clients (recharge_providers.user_id
+  // référence toujours `users` — aucune recharge marchand n'existe dans ce modèle).
+  if (type === 'marchand') return [];
+
   const { dateDebut: debut, dateFin: fin } = normalizeDateRange({ dateDebut, dateFin });
   const conditions = [];
   const params = { limit, offset };
@@ -359,13 +372,17 @@ async function fraudSignals() {
 // ---------------------------------------------------------------------
 // Notifications (vue admin — section "Notifications")
 // ---------------------------------------------------------------------
-async function listAllNotifications({ type, dateDebut, dateFin, limit = 50, offset = 0 } = {}) {
+async function listAllNotifications({ type, typeDestinataire, dateDebut, dateFin, limit = 50, offset = 0 } = {}) {
   const { dateDebut: debut, dateFin: fin } = normalizeDateRange({ dateDebut, dateFin });
   const conditions = [];
   const params = { limit, offset };
   if (type) {
     conditions.push('type = :type');
     params.type = type;
+  }
+  if (typeDestinataire === 'client' || typeDestinataire === 'marchand') {
+    conditions.push('type_destinataire = :typeDestinataire');
+    params.typeDestinataire = typeDestinataire;
   }
   if (debut) {
     conditions.push('date_creation >= :dateDebut');

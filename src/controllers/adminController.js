@@ -325,7 +325,7 @@ async function reviewMerchantKyb(req, res, next) {
 
 async function listTransactions(req, res, next) {
   try {
-    const { type, statut, dateDebut, dateFin, limit, offset } = req.query;
+    const { type, statut, dateDebut, dateFin, typeCompte, limit, offset } = req.query;
     ok(
       res,
       await adminService.listTransactions({
@@ -333,6 +333,7 @@ async function listTransactions(req, res, next) {
         statut,
         dateDebut,
         dateFin,
+        typeCompte,
         limit: Number(limit) || 50,
         offset: Number(offset) || 0,
       })
@@ -409,7 +410,7 @@ async function listWallets(req, res, next) {
 // ---------------------------------------------------------------------
 async function listRecharges(req, res, next) {
   try {
-    const { fournisseur, statut, dateDebut, dateFin, limit, offset } = req.query;
+    const { fournisseur, statut, dateDebut, dateFin, type, limit, offset } = req.query;
     ok(
       res,
       await adminService.listRecharges({
@@ -417,6 +418,7 @@ async function listRecharges(req, res, next) {
         statut,
         dateDebut,
         dateFin,
+        type,
         limit: Number(limit) || 50,
         offset: Number(offset) || 0,
       })
@@ -465,11 +467,12 @@ async function fraudeOverview(req, res, next) {
 // ---------------------------------------------------------------------
 async function listNotifications(req, res, next) {
   try {
-    const { type, dateDebut, dateFin, limit, offset } = req.query;
+    const { type, typeDestinataire, dateDebut, dateFin, limit, offset } = req.query;
     ok(
       res,
       await adminService.listAllNotifications({
         type,
+        typeDestinataire,
         dateDebut,
         dateFin,
         limit: Number(limit) || 50,
