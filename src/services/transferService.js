@@ -16,7 +16,10 @@ async function internalTransfer({ fromWalletId, toWalletId, montant, libelle }) 
     montant,
     statut: 'réussi',
     méthode: 'interne',
-    libelle: libelle || 'Transfert AfriPay',
+    // No default French fallback here: leaving it null when the sender didn't type a note lets
+    // each app render its own translated generic label (txTypeLabel) instead of baking one
+    // language into the stored row. `libelle` should only ever hold the sender's own text.
+    libelle: libelle || null,
   });
 }
 

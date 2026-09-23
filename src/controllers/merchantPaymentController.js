@@ -6,6 +6,7 @@ const walletService = require('../services/walletService');
 const transactionService = require('../services/transactionService');
 const biometricService = require('../services/biometricService');
 const notificationService = require('../services/notificationService');
+const { t } = require('../i18n');
 
 /**
  * Flux "Encaisser" — section 4.2/4.3 et 6.3 du cahier des charges.
@@ -38,8 +39,8 @@ async function encaisser(req, res, next) {
         destinataireId: client.id,
         typeDestinataire: 'client',
         type: 'transaction',
-        titre: 'Paiement refusé',
-        contenu: `Tentative de paiement de ${montant} FCFA refusée : solde insuffisant.`,
+        titre: t(client.langue, 'notif.paymentRefused.title'),
+        contenu: t(client.langue, 'notif.paymentRefused.body', { montant }),
       });
       throw new ApiError(400, 'Solde du client insuffisant pour couvrir ce montant');
     }
@@ -57,7 +58,7 @@ async function encaisser(req, res, next) {
       montant,
       statut: 'réussi',
       méthode: 'paume_de_main',
-      libelle: `Achat chez ${merchant.raison_sociale || merchant.telephone}`,
+      libelle: t(client.langue, 'tx.achatLibelle', { marchand: merchant.raison_sociale || merchant.telephone }),
     });
 
     await Promise.all([
@@ -65,8 +66,11 @@ async function encaisser(req, res, next) {
         destinataireId: client.id,
         typeDestinataire: 'client',
         type: 'transaction',
-        titre: 'Paiement effectué',
-        contenu: `Paiement de ${montant} FCFA accepté chez ${merchant.raison_sociale || 'un marchand AfriPay'}.`,
+        titre: t(client.langue, 'notif.paymentAccepted.title'),
+        contenu: t(client.langue, 'notif.paymentAccepted.body', {
+          montant,
+          marchand: merchant.raison_sociale || 'un marchand AfriPay',
+        }),
       }),
       notificationService.notify({
         destinataireId: merchant.id,

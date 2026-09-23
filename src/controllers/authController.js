@@ -10,6 +10,7 @@ const notificationService = require('../services/notificationService');
 const securityEventService = require('../services/securityEventService');
 const deviceSessionService = require('../services/deviceSessionService');
 const env = require('../config/env');
+const { t, SUPPORTED_LANGUAGES } = require('../i18n');
 
 function issueTokens(id, type) {
   const accessToken = signAccessToken({ id, type });
@@ -65,8 +66,8 @@ async function clientRegister(req, res, next) {
       destinataireId: user.id,
       typeDestinataire: 'client',
       type: 'système',
-      titre: 'Bienvenue sur AfriPay',
-      contenu: 'Votre compte a été créé. Complétez votre KYC pour débloquer le paiement par paume de main.',
+      titre: t(user.langue, 'notif.welcome.title'),
+      contenu: t(user.langue, 'notif.welcome.body'),
     });
 
     const tokens = issueTokens(user.id, 'client');
@@ -98,6 +99,22 @@ async function clientSetPin(req, res, next) {
       ip: req.ip,
     });
     ok(res, { updated: true });
+  } catch (e) {
+    next(e);
+  }
+}
+
+// Persists the app's language choice server-side (users.langue) so notifications generated
+// later (transfert reçu, décision KYC, etc.) render in the language the client last picked,
+// even if it was set on a different device.
+async function clientUpdateLanguage(req, res, next) {
+  try {
+    const { langue } = req.body;
+    if (!SUPPORTED_LANGUAGES.includes(langue)) {
+      throw new ApiError(400, `langue doit être l'une de : ${SUPPORTED_LANGUAGES.join(', ')}`);
+    }
+    await userService.updateProfile(req.auth.id, { langue });
+    ok(res, { updated: true, langue });
   } catch (e) {
     next(e);
   }
@@ -329,6 +346,7 @@ module.exports = {
   clientRequestOtp,
   clientRegister,
   clientSetPin,
+  clientUpdateLanguage,
   clientLogin,
   merchantRequestOtp,
   merchantRegister,

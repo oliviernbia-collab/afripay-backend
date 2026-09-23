@@ -1,5 +1,3 @@
-const path = require('path');
-const fs = require('fs');
 const ApiError = require('../utils/ApiError');
 const { ok } = require('../utils/response');
 const userService = require('../services/userService');
@@ -7,17 +5,13 @@ const merchantService = require('../services/merchantService');
 const kycService = require('../services/kycService');
 const notificationService = require('../services/notificationService');
 const securityEventService = require('../services/securityEventService');
-const { uploadDir } = require('../middleware/upload');
+const { uploadBuffer, destroyByUrl } = require('../config/cloudinary');
 
 const CLIENT_DOC_TYPES = ['cni', 'passeport', 'carte_sejour', 'selfie'];
 const MERCHANT_DOC_TYPES = ['cni', 'passeport', 'carte_sejour', 'selfie', 'rccm', 'ncc', 'justificatif_domicile', 'justificatif_activite'];
 
 function deleteUploadedFile(photoUrl) {
-  if (!photoUrl || !photoUrl.startsWith('/uploads/')) return;
-  const filePath = path.join(uploadDir, photoUrl.replace('/uploads/', ''));
-  fs.unlink(filePath, (err) => {
-    if (err && err.code !== 'ENOENT') console.error('[profil] échec suppression ancienne photo:', err.message);
-  });
+  destroyByUrl(photoUrl, { resourceType: 'image' });
 }
 
 async function uploadClientDocument(req, res, next) {
@@ -26,7 +20,8 @@ async function uploadClientDocument(req, res, next) {
     const { typeDocument } = req.body;
     if (!CLIENT_DOC_TYPES.includes(typeDocument)) throw new ApiError(400, `typeDocument invalide. Valeurs: ${CLIENT_DOC_TYPES.join(', ')}`);
 
-    const fichierRef = `/uploads/${req.file.filename}`;
+    const result = await uploadBuffer(req.file.buffer, { folder: 'afripay/kyc/clients' });
+    const fichierRef = result.secure_url;
     const docId = await kycService.addDocument({ userId: req.auth.id, typeDocument, fichierRef });
 
     await userService.updateKycStatus(req.auth.id, 'en_attente');
@@ -42,7 +37,8 @@ async function uploadMerchantDocument(req, res, next) {
     const { typeDocument } = req.body;
     if (!MERCHANT_DOC_TYPES.includes(typeDocument)) throw new ApiError(400, `typeDocument invalide. Valeurs: ${MERCHANT_DOC_TYPES.join(', ')}`);
 
-    const fichierRef = `/uploads/${req.file.filename}`;
+    const result = await uploadBuffer(req.file.buffer, { folder: 'afripay/kyc/marchands' });
+    const fichierRef = result.secure_url;
     const docId = await kycService.addDocument({ merchantId: req.auth.id, typeDocument, fichierRef });
 
     await merchantService.updateKybStatus(req.auth.id, 'en_attente');
@@ -101,7 +97,8 @@ async function uploadMyPhoto(req, res, next) {
     if (!req.file) throw new ApiError(400, 'Fichier requis (champ "photo")');
 
     const user = await userService.findById(req.auth.id);
-    const photoUrl = `/uploads/${req.file.filename}`;
+    const result = await uploadBuffer(req.file.buffer, { folder: 'afripay/avatars', resourceType: 'image' });
+    const photoUrl = result.secure_url;
     const updated = await userService.updateProfile(req.auth.id, { photo_url: photoUrl });
 
     deleteUploadedFile(user?.photo_url);

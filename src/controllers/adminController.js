@@ -1,5 +1,3 @@
-const fs = require('fs');
-const path = require('path');
 const ApiError = require('../utils/ApiError');
 const { ok } = require('../utils/response');
 const { compare } = require('../utils/crypto');
@@ -12,16 +10,13 @@ const kycService = require('../services/kycService');
 const notificationService = require('../services/notificationService');
 const auditService = require('../services/auditService');
 const { hash } = require('../utils/crypto');
-const { uploadDir } = require('../middleware/upload');
+const { uploadBuffer, destroyByUrl } = require('../config/cloudinary');
+const { t } = require('../i18n');
 
-// Supprime un ancien fichier d'upload (best-effort, ne doit jamais faire échouer l'action
+// Supprime l'ancienne photo Cloudinary (best-effort, ne doit jamais faire échouer l'action
 // principale) quand la photo de profil est remplacée ou retirée.
 function deleteUploadedFile(photoUrl) {
-  if (!photoUrl || !photoUrl.startsWith('/uploads/')) return;
-  const filePath = path.join(uploadDir, photoUrl.replace('/uploads/', ''));
-  fs.unlink(filePath, (err) => {
-    if (err && err.code !== 'ENOENT') console.error('[profil] échec suppression ancienne photo:', err.message);
-  });
+  destroyByUrl(photoUrl, { resourceType: 'image' });
 }
 
 async function login(req, res, next) {
@@ -128,7 +123,8 @@ async function uploadMyPhoto(req, res, next) {
     if (!req.file) throw new ApiError(400, 'Fichier requis (champ "photo")');
 
     const admin = await adminService.findById(req.auth.id);
-    const photoUrl = `/uploads/${req.file.filename}`;
+    const result = await uploadBuffer(req.file.buffer, { folder: 'afripay/avatars', resourceType: 'image' });
+    const photoUrl = result.secure_url;
     const updated = await adminService.setPhoto(req.auth.id, photoUrl);
 
     deleteUploadedFile(admin?.photo_url);
@@ -229,11 +225,14 @@ async function reviewUserKyc(req, res, next) {
       destinataireId: user.id,
       typeDestinataire: 'client',
       type: 'sécurité',
-      titre: 'Mise à jour de votre dossier KYC',
+      titre: t(user.langue, 'notif.kycUpdate.title'),
       contenu:
         decision === 'validé'
-          ? 'Votre dossier KYC a été validé. Le paiement par paume de main est activé.'
-          : `Votre dossier KYC a été ${decision}. ${motif || ''}`.trim(),
+          ? t(user.langue, 'notif.kycUpdate.validated')
+          : t(user.langue, 'notif.kycUpdate.other', {
+              decision: t(user.langue, `status.kyc.${decision}`),
+              motif: motif || '',
+            }).trim(),
     });
 
     await auditService.log({

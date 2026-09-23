@@ -5,6 +5,7 @@ const walletService = require('./walletService');
 const transactionService = require('./transactionService');
 const kycService = require('./kycService');
 const paymentMethodService = require('./paymentMethodService');
+const { t } = require('../i18n');
 
 const VALID_PROVIDERS = ['wave', 'orange_money', 'moov_money', 'mtn_money', 'djamo', 'visa'];
 
@@ -46,7 +47,7 @@ async function rechargeWallet({ user, fournisseur, montant, moyenPaiementId }) {
     montant,
     statut,
     méthode: fournisseur === 'visa' ? 'carte_visa' : 'mobile_money',
-    libelle: `Recharge via ${fournisseur}`,
+    libelle: t(user.langue, 'tx.rechargeLibelle', { provider: t(user.langue, `providers.${fournisseur}`) }),
   });
 
   const rechargeId = uuidv4();

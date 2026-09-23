@@ -31,4 +31,24 @@ module.exports = {
     expiresMin: Number(process.env.OTP_EXPIRES_MIN || 5),
     devEcho: (process.env.OTP_DEV_ECHO || 'true') === 'true',
   },
+  cloudinary: {
+    cloudName: process.env.CLOUDINARY_CLOUD_NAME || '',
+    apiKey: process.env.CLOUDINARY_API_KEY || '',
+    apiSecret: process.env.CLOUDINARY_API_SECRET || '',
+  },
+  // Real palm-vein/palm-print biometric payment (cahier des charges section 4), via Tencent
+  // PalmAI Enterprise KYC — see backend/src/services/tencent/. `enabled` stays false until a
+  // real tenant/AppId/keys are provisioned by Tencent (this is a sales-gated enterprise product,
+  // not self-service); until then the app keeps using the QR-code enrolment mock.
+  tencentPalm: {
+    enabled: (process.env.TENCENT_PALM_ENABLED || 'false') === 'true',
+    appId: process.env.TENCENT_PALM_APP_ID || '',
+    secretId: process.env.TENCENT_PALM_SECRET_ID || '',
+    secretKey: process.env.TENCENT_PALM_SECRET_KEY || '',
+    apiHost: process.env.TENCENT_PALM_API_HOST || 'open.intl.palm.tencent.com',
+    apiVersion: process.env.TENCENT_PALM_API_VERSION || '2025-07-15',
+    // Provided by Tencent alongside the AppId once the tenant is set up — hosts the mobile
+    // loader script the WebView embeds (see mobile clients' PalmBiometricWebView component).
+    sdkHost: process.env.TENCENT_PALM_SDK_HOST || '',
+  },
 };

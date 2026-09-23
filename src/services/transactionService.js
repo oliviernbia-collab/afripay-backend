@@ -58,13 +58,65 @@ async function listForWallet(walletId, { type, statut, dateDebut, dateFin, limit
     params.dateDebut = dateDebut;
   }
   if (dateFin) {
-    conditions.push('date_heure <= :dateFin');
+    // `dateFin` is a plain date ('YYYY-MM-DD'); comparing date_heure <= dateFin would implicitly
+    // compare against midnight and exclude the entire day (including "today" filters — the bug
+    // behind "today's" figures looking frozen). Compare against the start of the *next* day instead.
+    conditions.push('date_heure < DATE_ADD(:dateFin, INTERVAL 1 DAY)');
     params.dateFin = dateFin;
   }
 
   return query(
     `SELECT * FROM transactions WHERE ${conditions.join(' AND ')} ORDER BY date_heure DESC LIMIT :limit OFFSET :offset`,
     params
+  );
+}
+
+// Resolves the "other side" of a transaction (the counterparty) so the app can show a phone
+// number in the transaction detail — e.g. the client's number for a merchant's "achat", or the
+// recipient's number for a transfer. `wallet_source_id`/`wallet_destination_id` only carry an
+// AfriPay wallet id, not a name/phone, hence the extra lookups here.
+async function resolveCounterparty(tx, walletId) {
+  const otherWalletId = tx.wallet_source_id === walletId ? tx.wallet_destination_id : tx.wallet_source_id;
+
+  if (!otherWalletId) {
+    // No AfriPay wallet on the other side: either an external mobile-money transfer (the
+    // recipient's number is stored on transfer_external) or a recharge (money comes from the
+    // provider, not from another AfriPay account — no counterparty to show).
+    if (tx.type === 'transfert') {
+      const rows = await query(
+        'SELECT numéro_destinataire, opérateur_destination FROM transfer_external WHERE transaction_id = :id LIMIT 1',
+        { id: tx.id }
+      );
+      if (rows[0]) return { telephone: rows[0].numéro_destinataire, fournisseur: rows[0].opérateur_destination, externe: true };
+    }
+    return null;
+  }
+
+  const walletRows = await query(
+    'SELECT propriétaire_id, type_propriétaire FROM wallets WHERE id = :id LIMIT 1',
+    { id: otherWalletId }
+  );
+  const otherWallet = walletRows[0];
+  if (!otherWallet) return null;
+
+  if (otherWallet.type_propriétaire === 'marchand') {
+    const rows = await query('SELECT raison_sociale, telephone FROM merchants WHERE id = :id LIMIT 1', {
+      id: otherWallet.propriétaire_id,
+    });
+    if (!rows[0]) return null;
+    return { telephone: rows[0].telephone, nom: rows[0].raison_sociale };
+  }
+
+  const rows = await query('SELECT nom, prenom, telephone FROM users WHERE id = :id LIMIT 1', {
+    id: otherWallet.propriétaire_id,
+  });
+  if (!rows[0]) return null;
+  return { telephone: rows[0].telephone, nom: `${rows[0].prenom} ${rows[0].nom}`.trim() };
+}
+
+async function attachCounterparties(transactions, walletId) {
+  return Promise.all(
+    transactions.map(async (tx) => ({ ...tx, contrepartie: await resolveCounterparty(tx, walletId) }))
   );
 }
 
@@ -80,4 +132,4 @@ async function statsForWallet(walletId, period = 'jour') {
   );
 }
 
-module.exports = { recordTransaction, getById, listForWallet, statsForWallet };
+module.exports = { recordTransaction, getById, listForWallet, statsForWallet, attachCounterparties };

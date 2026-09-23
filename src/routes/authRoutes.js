@@ -9,6 +9,7 @@ router.post('/client/otp', authController.clientRequestOtp);
 router.post('/client/register', authController.clientRegister);
 router.post('/client/login', authController.clientLogin);
 router.post('/client/pin', authenticate, authController.clientSetPin);
+router.patch('/client/langue', authenticate, authController.clientUpdateLanguage);
 
 // Marchand
 router.post('/marchand/otp', authController.merchantRequestOtp);

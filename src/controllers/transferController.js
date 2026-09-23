@@ -8,6 +8,7 @@ const transferService = require('../services/transferService');
 const notificationService = require('../services/notificationService');
 const securityEventService = require('../services/securityEventService');
 const env = require('../config/env');
+const { t } = require('../i18n');
 
 async function assertPinIfNeeded(auth, montant, pin, req) {
   const threshold = env.business.pinConfirmThresholdFcfa;
@@ -76,12 +77,15 @@ async function transferToAfripayAccount(req, res, next) {
       libelle,
     });
 
+    // Merchants have no `langue` column yet, so their notifications stay French for now
+    // (see backend/src/i18n/index.js — client-only for this pass).
+    const destLangue = destType === 'client' ? destUser.langue : undefined;
     await notificationService.notify({
       destinataireId: destUser.id,
       typeDestinataire: destType,
       type: 'transaction',
-      titre: 'Transfert reçu',
-      contenu: `Vous avez reçu ${montant} FCFA sur votre compte AfriPay.`,
+      titre: t(destLangue, 'notif.transferReceived.title'),
+      contenu: t(destLangue, 'notif.transferReceived.body', { montant }),
     });
 
     ok(res, { transaction });

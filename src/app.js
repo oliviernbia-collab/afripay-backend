@@ -6,7 +6,6 @@ const rateLimit = require('express-rate-limit');
 const path = require('path');
 
 const { notFoundHandler, errorHandler } = require('./middleware/errorHandler');
-const { uploadDir } = require('./middleware/upload');
 
 const authRoutes = require('./routes/authRoutes');
 const walletRoutes = require('./routes/walletRoutes');
@@ -29,7 +28,9 @@ app.use(morgan('dev'));
 const globalLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 600 });
 app.use('/api', globalLimiter);
 
-app.use('/uploads', express.static(uploadDir));
+// Nouveaux fichiers (photos/documents) vont sur Cloudinary — cette route ne reste que pour
+// servir d'anciens fichiers uploadés avant la migration (voir config/cloudinary.js).
+app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
 
 app.get('/api/health', (req, res) => res.json({ success: true, service: 'afripay-backend', status: 'ok' }));
 
