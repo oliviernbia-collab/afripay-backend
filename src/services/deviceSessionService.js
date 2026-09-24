@@ -89,4 +89,13 @@ async function revokeSession(ownerType, ownerId, sessionId) {
   });
 }
 
-module.exports = { createSession, rotateSession, listSessions, revokeSession };
+// Révoque toutes les sessions d'un compte — utilisé après une réinitialisation de mot de passe
+// par OTP (compte potentiellement compromis, l'oubli du mot de passe ne le prouve pas mais ne
+// l'exclut pas non plus) : un refresh token déjà en circulation ne doit pas rester valide au-delà
+// de ce point.
+async function revokeAllSessions(ownerType, ownerId) {
+  const col = ownerColumn(ownerType);
+  await query(`UPDATE devices_sessions SET actif = 0 WHERE ${col} = :ownerId AND actif = 1`, { ownerId });
+}
+
+module.exports = { createSession, rotateSession, listSessions, revokeSession, revokeAllSessions };

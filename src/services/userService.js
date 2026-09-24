@@ -25,6 +25,10 @@ async function setPin(userId, pinHash) {
   await query('UPDATE users SET code_pin_hash = :pinHash WHERE id = :userId', { userId, pinHash });
 }
 
+async function setPassword(userId, motDePasseHash) {
+  await query('UPDATE users SET mot_de_passe_hash = :motDePasseHash WHERE id = :userId', { userId, motDePasseHash });
+}
+
 async function updateKycStatus(userId, statut) {
   await query('UPDATE users SET statut_kyc = :statut WHERE id = :userId', { userId, statut });
 }
@@ -50,4 +54,4 @@ function toPublic(user) {
   return rest;
 }
 
-module.exports = { findByPhone, findById, createUser, setPin, updateKycStatus, updateProfile, toPublic };
+module.exports = { findByPhone, findById, createUser, setPin, setPassword, updateKycStatus, updateProfile, toPublic };

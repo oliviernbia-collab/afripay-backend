@@ -19,13 +19,14 @@ function issueTokens(id, type) {
   return { accessToken, refreshToken };
 }
 
-// Blocage automatique après échecs répétés (exigence 9.1) : rejette la connexion avant
-// même de vérifier le mot de passe si trop d'échecs récents ont été journalisés pour ce
-// numéro, pour ne pas laisser un mot de passe correct contourner le blocage.
-async function assertNotLockedOut(telephone) {
+// Blocage automatique après échecs répétés (exigence 9.1) : rejette la connexion (ou le
+// changement de mot de passe) avant même de vérifier le mot de passe si trop d'échecs récents
+// ont été journalisés pour ce numéro, pour ne pas laisser un mot de passe correct contourner
+// le blocage.
+async function assertNotLockedOut(telephone, evenement = 'connexion') {
   const failures = await securityEventService.countRecentFailures({
     telephone,
-    evenement: 'connexion',
+    evenement,
     sinceMinutes: env.security.lockoutMinutes,
   });
   if (failures >= env.security.maxFailedAttempts) {
@@ -111,6 +112,140 @@ async function clientSetPin(req, res, next) {
       evenement: 'profil_maj',
       resultat: 'succes',
       détails: 'code_pin',
+      ip: req.ip,
+    });
+    ok(res, { updated: true });
+  } catch (e) {
+    next(e);
+  }
+}
+
+// Change le mot de passe de connexion. `motDePasseActuel` doit le confirmer — sans quoi une
+// session volée (token encore valide, durée de vie 15 min) suffirait à en prendre le contrôle
+// durable sans jamais avoir connu le mot de passe (même logique que clientSetPin pour le PIN).
+async function clientChangePassword(req, res, next) {
+  try {
+    const { motDePasseActuel, motDePasse } = req.body;
+    if (!motDePasseActuel || !motDePasse) {
+      throw new ApiError(400, 'Le mot de passe actuel et le nouveau mot de passe sont requis');
+    }
+    if (motDePasse.length < 6) {
+      throw new ApiError(400, 'Le nouveau mot de passe doit contenir au moins 6 caractères');
+    }
+
+    const user = await userService.findById(req.auth.id);
+    if (!user) throw new ApiError(404, 'Utilisateur introuvable');
+
+    await assertNotLockedOut(user.telephone, 'profil_maj');
+
+    const validPassword = await compare(motDePasseActuel, user.mot_de_passe_hash);
+    if (!validPassword) {
+      await securityEventService.log({
+        acteurType: 'client',
+        acteurId: req.auth.id,
+        telephone: user.telephone,
+        evenement: 'profil_maj',
+        resultat: 'echec',
+        détails: 'mot_de_passe',
+        ip: req.ip,
+      });
+      throw new ApiError(401, 'Mot de passe actuel incorrect');
+    }
+
+    const motDePasseHash = await hash(motDePasse);
+    await userService.setPassword(req.auth.id, motDePasseHash);
+    await securityEventService.log({
+      acteurType: 'client',
+      acteurId: req.auth.id,
+      telephone: user.telephone,
+      evenement: 'profil_maj',
+      resultat: 'succes',
+      détails: 'mot_de_passe',
+      ip: req.ip,
+    });
+    ok(res, { updated: true });
+  } catch (e) {
+    next(e);
+  }
+}
+
+const RESET_OBJET = { pin: 'reinitialisation_pin', password: 'reinitialisation_mdp' };
+
+// Étape 1 de la récupération (code PIN ou mot de passe oubliés) : envoie l'OTP au numéro fourni,
+// non authentifiée puisque c'est justement le cas où le client ne peut pas se connecter
+// normalement. Le compte doit exister — sinon rien à réinitialiser.
+async function clientRequestResetOtp(req, res, next) {
+  try {
+    const { telephone, type } = req.body;
+    const objet = RESET_OBJET[type];
+    if (!telephone || !objet) throw new ApiError(400, "telephone et type ('pin' ou 'password') sont requis");
+
+    const user = await userService.findByPhone(telephone);
+    if (!user) throw new ApiError(404, 'Aucun compte trouvé avec ce numéro');
+
+    const result = await otpService.generateOtp(telephone, objet);
+    ok(res, { sent: true, devCode: result.devCode });
+  } catch (e) {
+    next(e);
+  }
+}
+
+// Étape 2 : remplace le code PIN sans connaître l'ancien, la vérification par OTP en tenant
+// lieu (c'est le sens même d'une récupération sur code oublié).
+async function clientResetPin(req, res, next) {
+  try {
+    const { telephone, otp, pin } = req.body;
+    if (!telephone || !otp) throw new ApiError(400, 'telephone et otp sont requis');
+    if (!pin || !/^\d{4,6}$/.test(pin)) throw new ApiError(400, 'Le code PIN doit contenir 4 à 6 chiffres');
+
+    const user = await userService.findByPhone(telephone);
+    if (!user) throw new ApiError(404, 'Aucun compte trouvé avec ce numéro');
+
+    await otpService.verifyOtp(telephone, otp, RESET_OBJET.pin);
+
+    const pinHash = await hash(pin);
+    await userService.setPin(user.id, pinHash);
+    await securityEventService.log({
+      acteurType: 'client',
+      acteurId: user.id,
+      telephone,
+      evenement: 'profil_maj',
+      resultat: 'succes',
+      détails: 'code_pin_reinit',
+      ip: req.ip,
+    });
+    ok(res, { updated: true });
+  } catch (e) {
+    next(e);
+  }
+}
+
+// Étape 2 pour le mot de passe : révoque aussi toutes les sessions actives — un refresh token
+// déjà en circulation (30 jours de validité) ne doit pas rester utilisable après coup, l'oubli
+// du mot de passe pouvant tout autant masquer une perte d'accès qu'un compte compromis.
+async function clientResetPassword(req, res, next) {
+  try {
+    const { telephone, otp, motDePasse } = req.body;
+    if (!telephone || !otp) throw new ApiError(400, 'telephone et otp sont requis');
+    if (!motDePasse || motDePasse.length < 6) {
+      throw new ApiError(400, 'Le nouveau mot de passe doit contenir au moins 6 caractères');
+    }
+
+    const user = await userService.findByPhone(telephone);
+    if (!user) throw new ApiError(404, 'Aucun compte trouvé avec ce numéro');
+
+    await otpService.verifyOtp(telephone, otp, RESET_OBJET.password);
+
+    const motDePasseHash = await hash(motDePasse);
+    await userService.setPassword(user.id, motDePasseHash);
+    await deviceSessionService.revokeAllSessions('client', user.id);
+    await securityEventService.log({
+      acteurType: 'client',
+      acteurId: user.id,
+      telephone,
+      evenement: 'profil_maj',
+      resultat: 'succes',
+      détails: 'mot_de_passe_reinit',
       ip: req.ip,
     });
     ok(res, { updated: true });
@@ -372,6 +507,10 @@ module.exports = {
   clientRequestOtp,
   clientRegister,
   clientSetPin,
+  clientChangePassword,
+  clientRequestResetOtp,
+  clientResetPin,
+  clientResetPassword,
   clientUpdateLanguage,
   clientLogin,
   merchantRequestOtp,

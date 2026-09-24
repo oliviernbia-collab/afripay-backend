@@ -10,6 +10,10 @@ router.post('/client/otp', otpLimiter, authController.clientRequestOtp);
 router.post('/client/register', authController.clientRegister);
 router.post('/client/login', loginLimiter, authController.clientLogin);
 router.post('/client/pin', authenticate, authController.clientSetPin);
+router.post('/client/password', authenticate, authController.clientChangePassword);
+router.post('/client/otp-reset', otpLimiter, authController.clientRequestResetOtp);
+router.post('/client/reset-pin', authController.clientResetPin);
+router.post('/client/reset-password', authController.clientResetPassword);
 router.patch('/client/langue', authenticate, authController.clientUpdateLanguage);
 
 // Marchand
