@@ -9,9 +9,14 @@ const merchantService = require('../services/merchantService');
 const kycService = require('../services/kycService');
 const notificationService = require('../services/notificationService');
 const auditService = require('../services/auditService');
+const securityEventService = require('../services/securityEventService');
+const pinService = require('../services/pinService');
 const { hash } = require('../utils/crypto');
 const { uploadBuffer, destroyByUrl } = require('../config/cloudinary');
+const { matchesSignature } = require('../utils/fileSignature');
 const { t } = require('../i18n');
+
+const MIN_ADMIN_PASSWORD_LENGTH = 8;
 
 // Supprime l'ancienne photo Cloudinary (best-effort, ne doit jamais faire échouer l'action
 // principale) quand la photo de profil est remplacée ou retirée.
@@ -19,13 +24,37 @@ function deleteUploadedFile(photoUrl) {
   destroyByUrl(photoUrl, { resourceType: 'image' });
 }
 
+// Blocage automatique après échecs répétés (exigence 9.1) — le login admin n'était auparavant
+// couvert que par le rate-limit global de l'API, contrairement aux logins client/marchand.
+// `email` sert ici de clé de compteur (même mécanisme que le téléphone côté client/marchand).
 async function login(req, res, next) {
+  const { email, motDePasse } = req.body;
   try {
-    const { email, motDePasse } = req.body;
+    if (!email || !motDePasse) throw new ApiError(400, 'email et motDePasse sont requis');
+    await pinService.assertNotLockedOut({ telephone: email, evenement: 'connexion_admin' });
+
     const admin = await adminService.findByEmail(email);
-    if (!admin) throw new ApiError(401, 'Identifiants invalides');
-    const valid = await compare(motDePasse, admin.mot_de_passe_hash);
-    if (!valid) throw new ApiError(401, 'Identifiants invalides');
+    const valid = admin && (await compare(motDePasse, admin.mot_de_passe_hash));
+    if (!admin || !valid || !admin.actif) {
+      await securityEventService.log({
+        acteurType: 'admin',
+        acteurId: admin?.id,
+        telephone: email,
+        evenement: 'connexion_admin',
+        resultat: 'echec',
+        ip: req.ip,
+      });
+      throw new ApiError(401, 'Identifiants invalides');
+    }
+
+    await securityEventService.log({
+      acteurType: 'admin',
+      acteurId: admin.id,
+      telephone: email,
+      evenement: 'connexion_admin',
+      resultat: 'succes',
+      ip: req.ip,
+    });
 
     const accessToken = signAccessToken({ id: admin.id, type: 'admin', role: admin.role, nom: admin.nom });
     const refreshToken = signRefreshToken({ id: admin.id, type: 'admin', role: admin.role, nom: admin.nom });
@@ -84,7 +113,9 @@ async function changeMyPassword(req, res, next) {
     if (!motDePasseActuel || !nouveauMotDePasse) {
       throw new ApiError(400, 'motDePasseActuel et nouveauMotDePasse sont requis');
     }
-    if (nouveauMotDePasse.length < 6) throw new ApiError(400, 'Le nouveau mot de passe doit contenir au moins 6 caractères');
+    if (nouveauMotDePasse.length < MIN_ADMIN_PASSWORD_LENGTH) {
+      throw new ApiError(400, `Le nouveau mot de passe doit contenir au moins ${MIN_ADMIN_PASSWORD_LENGTH} caractères`);
+    }
 
     const admin = await adminService.findById(req.auth.id);
     if (!admin) throw new ApiError(404, 'Administrateur introuvable');
@@ -121,6 +152,9 @@ async function myActivity(req, res, next) {
 async function uploadMyPhoto(req, res, next) {
   try {
     if (!req.file) throw new ApiError(400, 'Fichier requis (champ "photo")');
+    if (!matchesSignature(req.file.buffer, req.file.mimetype)) {
+      throw new ApiError(400, 'Le contenu du fichier ne correspond pas au type déclaré');
+    }
 
     const admin = await adminService.findById(req.auth.id);
     const result = await uploadBuffer(req.file.buffer, { folder: 'afripay/avatars', resourceType: 'image' });
@@ -209,6 +243,9 @@ async function reviewUserKyc(req, res, next) {
   try {
     const { decision, motif } = req.body; // decision: 'validé' | 'rejeté' | 'suspendu'
     if (!['validé', 'rejeté', 'suspendu'].includes(decision)) throw new ApiError(400, 'decision invalide');
+    if (['rejeté', 'suspendu'].includes(decision) && !motif?.trim()) {
+      throw new ApiError(400, 'Un motif est requis pour rejeter ou suspendre un dossier');
+    }
 
     const user = await userService.findById(req.params.id);
     if (!user) throw new ApiError(404, 'Utilisateur introuvable');
@@ -284,6 +321,9 @@ async function reviewMerchantKyb(req, res, next) {
   try {
     const { decision, motif } = req.body;
     if (!['validé', 'rejeté', 'suspendu'].includes(decision)) throw new ApiError(400, 'decision invalide');
+    if (['rejeté', 'suspendu'].includes(decision) && !motif?.trim()) {
+      throw new ApiError(400, 'Un motif est requis pour rejeter ou suspendre un dossier');
+    }
 
     const merchant = await merchantService.findById(req.params.id);
     if (!merchant) throw new ApiError(404, 'Marchand introuvable');
@@ -529,6 +569,9 @@ async function createInternalUser(req, res, next) {
   try {
     const { nom, email, motDePasse, role } = req.body;
     if (!nom || !email || !motDePasse) throw new ApiError(400, 'nom, email et motDePasse sont requis');
+    if (motDePasse.length < MIN_ADMIN_PASSWORD_LENGTH) {
+      throw new ApiError(400, `Le mot de passe doit contenir au moins ${MIN_ADMIN_PASSWORD_LENGTH} caractères`);
+    }
     const validRole = ['super_admin', 'conformite', 'support'].includes(role) ? role : 'support';
 
     const existing = await adminService.findByEmail(email);

@@ -14,11 +14,14 @@ async function enroll(req, res, next) {
   }
 }
 
+// Régénère le code de présentation à chaque consultation (écran "Payer" de l'app Client) plutôt
+// que de renvoyer un code statique — limite la fenêtre de rejeu si le QR affiché est capturé
+// par un tiers (voir biometricService.refreshActiveCode).
 async function myPalmCode(req, res, next) {
   try {
-    const template = await biometricService.getActiveTemplate(req.auth.id);
+    const template = await biometricService.refreshActiveCode(req.auth.id);
     if (!template) throw new ApiError(404, "Aucun enrôlement biométrique actif. Complétez le KYC d'abord.");
-    ok(res, { palmCode: template.palm_code });
+    ok(res, { palmCode: template.palm_code, expireA: template.expire_a });
   } catch (e) {
     next(e);
   }

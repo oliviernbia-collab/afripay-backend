@@ -1,5 +1,5 @@
 const { v4: uuidv4 } = require('uuid');
-const { query } = require('../config/db');
+const { query, pool } = require('../config/db');
 const { randomReference } = require('../utils/crypto');
 const ApiError = require('../utils/ApiError');
 const walletService = require('./walletService');
@@ -34,17 +34,38 @@ async function externalTransfer({ merchant, opérateurDestination, numéroDestin
   if (!VALID_OPERATORS.includes(opérateurDestination)) {
     throw new ApiError(400, `Opérateur de destination inconnu: ${opérateurDestination}`);
   }
+  const amount = Number(montant);
+  if (!Number.isFinite(amount) || amount <= 0) throw new ApiError(400, 'Montant invalide');
 
-  const wallet = await walletService.getWalletByOwner(merchant.id, 'marchand');
-  if (Number(wallet.solde) < Number(montant)) throw new ApiError(400, 'Solde marchand insuffisant');
+  // Débit verrouillé dans une transaction SQL (SELECT ... FOR UPDATE), comme le transfert interne
+  // (walletService.transferBetweenWallets) : sans ce verrou, deux appels concurrents pouvaient lire
+  // le même solde initial et débiter chacun séparément, faisant passer le solde marchand en négatif.
+  const conn = await pool.getConnection();
+  let wallet;
+  try {
+    await conn.beginTransaction();
+    const [rows] = await conn.query('SELECT * FROM wallets WHERE propriétaire_id = ? AND type_propriétaire = ? FOR UPDATE', [
+      merchant.id,
+      'marchand',
+    ]);
+    wallet = rows[0];
+    if (!wallet) throw new ApiError(404, 'Portefeuille marchand introuvable');
+    if (Number(wallet.solde) < amount) throw new ApiError(400, 'Solde marchand insuffisant');
 
-  await query('UPDATE wallets SET solde = solde - :montant WHERE id = :walletId', { montant, walletId: wallet.id });
+    await conn.query('UPDATE wallets SET solde = solde - ? WHERE id = ?', [amount, wallet.id]);
+    await conn.commit();
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  } finally {
+    conn.release();
+  }
 
   const transaction = await transactionService.recordTransaction({
     type: 'transfert',
     walletSourceId: wallet.id,
     walletDestinationId: null,
-    montant,
+    montant: amount,
     statut: 'réussi',
     méthode: 'mobile_money',
     libelle: `Transfert vers ${opérateurDestination} (${numéroDestinataire})`,
@@ -60,7 +81,7 @@ async function externalTransfer({ merchant, opérateurDestination, numéroDestin
       transactionId: transaction.id,
       operateurDest: opérateurDestination,
       numeroDest: numéroDestinataire,
-      montant,
+      montant: amount,
     }
   );
 

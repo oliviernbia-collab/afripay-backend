@@ -26,6 +26,12 @@ async function getWalletById(id) {
 
 // Débite `fromWallet` et crédite `toWallet` de façon atomique (transaction SQL avec verrous de ligne).
 async function transferBetweenWallets({ fromWalletId, toWalletId, montant }) {
+  // Garde-fou défensif au niveau service (en plus de la validation faite par les contrôleurs
+  // appelants) : Number("abc") vaut NaN, et NaN < x est toujours faux, ce qui contournerait
+  // silencieusement la vérification de solde ci-dessous si on ne le rejetait pas explicitement.
+  const amount = Number(montant);
+  if (!Number.isFinite(amount) || amount <= 0) throw new ApiError(400, 'Montant invalide');
+
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
@@ -33,14 +39,14 @@ async function transferBetweenWallets({ fromWalletId, toWalletId, montant }) {
     const [sourceRows] = await conn.query('SELECT * FROM wallets WHERE id = ? FOR UPDATE', [fromWalletId]);
     const source = sourceRows[0];
     if (!source) throw new ApiError(404, 'Portefeuille source introuvable');
-    if (Number(source.solde) < Number(montant)) throw new ApiError(400, 'Solde insuffisant');
+    if (Number(source.solde) < amount) throw new ApiError(400, 'Solde insuffisant');
 
     const [destRows] = await conn.query('SELECT * FROM wallets WHERE id = ? FOR UPDATE', [toWalletId]);
     const dest = destRows[0];
     if (!dest) throw new ApiError(404, 'Portefeuille destinataire introuvable');
 
-    await conn.query('UPDATE wallets SET solde = solde - ? WHERE id = ?', [montant, fromWalletId]);
-    await conn.query('UPDATE wallets SET solde = solde + ? WHERE id = ?', [montant, toWalletId]);
+    await conn.query('UPDATE wallets SET solde = solde - ? WHERE id = ?', [amount, fromWalletId]);
+    await conn.query('UPDATE wallets SET solde = solde + ? WHERE id = ?', [amount, toWalletId]);
 
     await conn.commit();
     return { source, dest };

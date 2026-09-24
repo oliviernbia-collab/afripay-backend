@@ -3,12 +3,15 @@ const { ok, created } = require('../utils/response');
 const userService = require('../services/userService');
 const rechargeService = require('../services/rechargeService');
 const paymentMethodService = require('../services/paymentMethodService');
+const { toValidAmount } = require('../utils/amount');
+const env = require('../config/env');
 
 async function recharge(req, res, next) {
   try {
     if (req.auth.type !== 'client') throw new ApiError(403, 'Réservé aux comptes Client');
-    const { fournisseur, montant, moyenPaiementId } = req.body;
-    if (!fournisseur || !montant || Number(montant) <= 0) throw new ApiError(400, 'fournisseur et montant (>0) sont requis');
+    const { fournisseur, moyenPaiementId } = req.body;
+    if (!fournisseur) throw new ApiError(400, 'fournisseur est requis');
+    const montant = toValidAmount(req.body.montant, { max: env.business.maxTransactionFcfa });
 
     const user = await userService.findById(req.auth.id);
     const result = await rechargeService.rechargeWallet({ user, fournisseur, montant, moyenPaiementId });

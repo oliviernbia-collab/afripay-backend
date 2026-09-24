@@ -6,6 +6,9 @@ const walletService = require('../services/walletService');
 const transactionService = require('../services/transactionService');
 const biometricService = require('../services/biometricService');
 const notificationService = require('../services/notificationService');
+const pinService = require('../services/pinService');
+const { toValidAmount } = require('../utils/amount');
+const env = require('../config/env');
 const { t } = require('../i18n');
 
 /**
@@ -19,9 +22,9 @@ const { t } = require('../i18n');
 async function encaisser(req, res, next) {
   try {
     if (req.auth.type !== 'marchand') throw new ApiError(403, 'Réservé aux comptes Marchand');
-    const { montant, palmCode } = req.body;
-    if (!montant || Number(montant) <= 0) throw new ApiError(400, 'Montant invalide');
+    const { palmCode, clientPin } = req.body;
     if (!palmCode) throw new ApiError(400, 'palmCode requis (scan de la paume du client)');
+    const montant = toValidAmount(req.body.montant, { max: env.business.maxTransactionFcfa });
 
     const merchant = await merchantService.findById(req.auth.id);
     if (merchant.statut_kyb !== 'validé') {
@@ -30,6 +33,19 @@ async function encaisser(req, res, next) {
 
     const clientUserId = await biometricService.verifyByPalmCode(palmCode, { merchantId: merchant.id, ip: req.ip });
     const client = await userService.findById(clientUserId);
+
+    // Confirmation additionnelle par PIN au-delà d'un certain montant (cahier des charges 4.3
+    // pt.12) — saisie par le client sur le terminal du marchand, comme un code PIN à un TPE
+    // physique. En dessous du seuil, la présentation de la paume (le palmCode) suffit.
+    await pinService.assertPinConfirmation({
+      account: client,
+      acteurType: 'client',
+      acteurId: client.id,
+      montant,
+      pin: clientPin,
+      threshold: env.business.pinConfirmThresholdPaiementFcfa,
+      req,
+    });
 
     const clientWallet = await walletService.getWalletByOwner(client.id, 'client');
     const merchantWallet = await walletService.getWalletByOwner(merchant.id, 'marchand');
@@ -83,7 +99,9 @@ async function encaisser(req, res, next) {
 
     ok(res, {
       transaction,
-      client: { nom: client.nom, prenom: client.prenom },
+      // Client anonymisé côté marchand (cahier des charges 6.5) : initiales seulement, jamais le
+      // nom complet sur le reçu affiché au point de vente.
+      client: { nom: transactionService.maskName(`${client.prenom} ${client.nom}`) },
       reçu: {
         reference: transaction.reference,
         montant: transaction.montant,

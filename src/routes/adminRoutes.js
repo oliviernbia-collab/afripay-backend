@@ -2,14 +2,17 @@ const express = require('express');
 const adminController = require('../controllers/adminController');
 const { authenticate, requireType, requireRole } = require('../middleware/auth');
 const { uploadPhoto } = require('../middleware/upload');
+const { loginLimiter } = require('../middleware/rateLimiters');
 
 const router = express.Router();
 const adminOnly = [authenticate, requireType('admin')];
 // Sections sensibles : gestion des comptes internes + journal d'audit.
 const superAdminOnly = [authenticate, requireType('admin'), requireRole('super_admin')];
+// Décisions de conformité (KYC/KYB) et lecture des signaux de fraude/audit : réservées aux
+// rôles habilités à en répondre, pas à n'importe quel compte admin (ex. "support").
 const auditReaders = [authenticate, requireType('admin'), requireRole('super_admin', 'conformite')];
 
-router.post('/login', adminController.login);
+router.post('/login', loginLimiter, adminController.login);
 router.get('/me', ...adminOnly, adminController.me);
 router.patch('/me', ...adminOnly, adminController.updateMyProfile);
 router.post('/me/mot-de-passe', ...adminOnly, adminController.changeMyPassword);
@@ -20,11 +23,11 @@ router.get('/dashboard', ...adminOnly, adminController.dashboard);
 
 router.get('/utilisateurs', ...adminOnly, adminController.listUsers);
 router.get('/utilisateurs/:id', ...adminOnly, adminController.getUser);
-router.post('/utilisateurs/:id/kyc', ...adminOnly, adminController.reviewUserKyc);
+router.post('/utilisateurs/:id/kyc', ...auditReaders, adminController.reviewUserKyc);
 
 router.get('/marchands', ...adminOnly, adminController.listMerchants);
 router.get('/marchands/:id', ...adminOnly, adminController.getMerchant);
-router.post('/marchands/:id/kyb', ...adminOnly, adminController.reviewMerchantKyb);
+router.post('/marchands/:id/kyb', ...auditReaders, adminController.reviewMerchantKyb);
 
 router.get('/transactions', ...adminOnly, adminController.listTransactions);
 

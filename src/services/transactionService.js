@@ -71,11 +71,32 @@ async function listForWallet(walletId, { type, statut, dateDebut, dateFin, limit
   );
 }
 
+// Masque partiellement un nom/prénom ("Awa Diop" -> "A. D.") et un numéro de téléphone
+// ("+2250700000012" -> "+225••••••12") — anonymisation du client dans l'historique marchand
+// (cahier des charges 6.5 : "client anonymisé selon la réglementation"). Ne s'applique qu'à la
+// personne physique cliente vue par un marchand, jamais à l'identité d'un marchand (raison
+// sociale) ni à la vue d'un client sur son propre historique.
+function maskName(nom) {
+  if (!nom) return nom;
+  return nom
+    .trim()
+    .split(/\s+/)
+    .map((part) => (part ? `${part[0].toUpperCase()}.` : part))
+    .join(' ');
+}
+
+function maskPhone(telephone) {
+  if (!telephone || telephone.length <= 4) return '••••';
+  const prefixLen = Math.min(4, telephone.length - 2);
+  return `${telephone.slice(0, prefixLen)}${'•'.repeat(Math.max(3, telephone.length - prefixLen - 2))}${telephone.slice(-2)}`;
+}
+
 // Resolves the "other side" of a transaction (the counterparty) so the app can show a phone
 // number in the transaction detail — e.g. the client's number for a merchant's "achat", or the
 // recipient's number for a transfer. `wallet_source_id`/`wallet_destination_id` only carry an
-// AfriPay wallet id, not a name/phone, hence the extra lookups here.
-async function resolveCounterparty(tx, walletId) {
+// AfriPay wallet id, not a name/phone, hence the extra lookups here. `viewerType` ('client' |
+// 'marchand') anonymise l'identité du client quand le spectateur est un marchand.
+async function resolveCounterparty(tx, walletId, viewerType) {
   const otherWalletId = tx.wallet_source_id === walletId ? tx.wallet_destination_id : tx.wallet_source_id;
 
   if (!otherWalletId) {
@@ -111,12 +132,16 @@ async function resolveCounterparty(tx, walletId) {
     id: otherWallet.propriétaire_id,
   });
   if (!rows[0]) return null;
-  return { telephone: rows[0].telephone, nom: `${rows[0].prenom} ${rows[0].nom}`.trim() };
+  const fullName = `${rows[0].prenom} ${rows[0].nom}`.trim();
+  if (viewerType === 'marchand') {
+    return { telephone: maskPhone(rows[0].telephone), nom: maskName(fullName), anonymisé: true };
+  }
+  return { telephone: rows[0].telephone, nom: fullName };
 }
 
-async function attachCounterparties(transactions, walletId) {
+async function attachCounterparties(transactions, walletId, viewerType) {
   return Promise.all(
-    transactions.map(async (tx) => ({ ...tx, contrepartie: await resolveCounterparty(tx, walletId) }))
+    transactions.map(async (tx) => ({ ...tx, contrepartie: await resolveCounterparty(tx, walletId, viewerType) }))
   );
 }
 
@@ -132,4 +157,4 @@ async function statsForWallet(walletId, period = 'jour') {
   );
 }
 
-module.exports = { recordTransaction, getById, listForWallet, statsForWallet, attachCounterparties };
+module.exports = { recordTransaction, getById, listForWallet, statsForWallet, attachCounterparties, maskName, maskPhone };

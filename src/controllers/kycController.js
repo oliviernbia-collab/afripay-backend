@@ -6,6 +6,7 @@ const kycService = require('../services/kycService');
 const notificationService = require('../services/notificationService');
 const securityEventService = require('../services/securityEventService');
 const { uploadBuffer, destroyByUrl } = require('../config/cloudinary');
+const { matchesSignature } = require('../utils/fileSignature');
 
 const CLIENT_DOC_TYPES = ['cni', 'passeport', 'carte_sejour', 'selfie'];
 const MERCHANT_DOC_TYPES = ['cni', 'passeport', 'carte_sejour', 'selfie', 'rccm', 'ncc', 'justificatif_domicile', 'justificatif_activite'];
@@ -19,6 +20,9 @@ async function uploadClientDocument(req, res, next) {
     if (!req.file) throw new ApiError(400, 'Fichier requis (champ "document")');
     const { typeDocument } = req.body;
     if (!CLIENT_DOC_TYPES.includes(typeDocument)) throw new ApiError(400, `typeDocument invalide. Valeurs: ${CLIENT_DOC_TYPES.join(', ')}`);
+    if (!matchesSignature(req.file.buffer, req.file.mimetype)) {
+      throw new ApiError(400, 'Le contenu du fichier ne correspond pas au type déclaré');
+    }
 
     const result = await uploadBuffer(req.file.buffer, { folder: 'afripay/kyc/clients' });
     const fichierRef = result.secure_url;
@@ -36,6 +40,9 @@ async function uploadMerchantDocument(req, res, next) {
     if (!req.file) throw new ApiError(400, 'Fichier requis (champ "document")');
     const { typeDocument } = req.body;
     if (!MERCHANT_DOC_TYPES.includes(typeDocument)) throw new ApiError(400, `typeDocument invalide. Valeurs: ${MERCHANT_DOC_TYPES.join(', ')}`);
+    if (!matchesSignature(req.file.buffer, req.file.mimetype)) {
+      throw new ApiError(400, 'Le contenu du fichier ne correspond pas au type déclaré');
+    }
 
     const result = await uploadBuffer(req.file.buffer, { folder: 'afripay/kyc/marchands' });
     const fichierRef = result.secure_url;
@@ -95,6 +102,9 @@ async function submitPersonalInfo(req, res, next) {
 async function uploadMyPhoto(req, res, next) {
   try {
     if (!req.file) throw new ApiError(400, 'Fichier requis (champ "photo")');
+    if (!matchesSignature(req.file.buffer, req.file.mimetype)) {
+      throw new ApiError(400, 'Le contenu du fichier ne correspond pas au type déclaré');
+    }
 
     const user = await userService.findById(req.auth.id);
     const result = await uploadBuffer(req.file.buffer, { folder: 'afripay/avatars', resourceType: 'image' });

@@ -31,7 +31,7 @@ async function getMyHistory(req, res, next) {
       limit: limit ? Number(limit) : 50,
       offset: offset ? Number(offset) : 0,
     });
-    ok(res, await transactionService.attachCounterparties(history, wallet.id));
+    ok(res, await transactionService.attachCounterparties(history, wallet.id, req.auth.type));
   } catch (e) {
     next(e);
   }

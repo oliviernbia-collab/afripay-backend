@@ -5,6 +5,7 @@ const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
 
+const env = require('./config/env');
 const { notFoundHandler, errorHandler } = require('./middleware/errorHandler');
 
 const authRoutes = require('./routes/authRoutes');
@@ -20,7 +21,25 @@ const adminRoutes = require('./routes/adminRoutes');
 const app = express();
 
 app.use(helmet({ crossOriginResourcePolicy: false }));
-app.use(cors());
+
+// CORS restreint à une liste blanche d'origines (CORS_ALLOWED_ORIGINS) — l'authentification se
+// fait par Bearer token (pas de cookie), donc l'enjeu principal n'est pas le CSRF classique mais
+// d'éviter qu'un site tiers quelconque puisse piloter l'API depuis le navigateur d'un utilisateur.
+// En développement (liste vide), on reflète l'origine de la requête pour rester pratique en local.
+const { allowedOrigins } = env.cors;
+if (env.nodeEnv === 'production' && allowedOrigins.length === 0) {
+  // eslint-disable-next-line no-console
+  console.warn('[cors] CORS_ALLOWED_ORIGINS est vide en production : aucune origine cross-site ne sera autorisée.');
+}
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin) return callback(null, true); // apps mobiles / curl / server-to-server : pas d'en-tête Origin
+      if (allowedOrigins.length === 0) return callback(null, env.nodeEnv !== 'production');
+      return callback(null, allowedOrigins.includes(origin));
+    },
+  })
+);
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan('dev'));

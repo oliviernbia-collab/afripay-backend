@@ -1,20 +1,21 @@
 const express = require('express');
 const authController = require('../controllers/authController');
 const { authenticate } = require('../middleware/auth');
+const { loginLimiter, otpLimiter } = require('../middleware/rateLimiters');
 
 const router = express.Router();
 
 // Client
-router.post('/client/otp', authController.clientRequestOtp);
+router.post('/client/otp', otpLimiter, authController.clientRequestOtp);
 router.post('/client/register', authController.clientRegister);
-router.post('/client/login', authController.clientLogin);
+router.post('/client/login', loginLimiter, authController.clientLogin);
 router.post('/client/pin', authenticate, authController.clientSetPin);
 router.patch('/client/langue', authenticate, authController.clientUpdateLanguage);
 
 // Marchand
-router.post('/marchand/otp', authController.merchantRequestOtp);
+router.post('/marchand/otp', otpLimiter, authController.merchantRequestOtp);
 router.post('/marchand/register', authController.merchantRegister);
-router.post('/marchand/login', authController.merchantLogin);
+router.post('/marchand/login', loginLimiter, authController.merchantLogin);
 router.post('/marchand/pin', authenticate, authController.merchantSetPin);
 
 // Commun

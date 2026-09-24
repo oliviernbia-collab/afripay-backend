@@ -9,6 +9,7 @@ const otpService = require('../services/otpService');
 const notificationService = require('../services/notificationService');
 const securityEventService = require('../services/securityEventService');
 const deviceSessionService = require('../services/deviceSessionService');
+const pinService = require('../services/pinService');
 const env = require('../config/env');
 const { t, SUPPORTED_LANGUAGES } = require('../i18n');
 
@@ -84,15 +85,29 @@ async function clientRegister(req, res, next) {
   }
 }
 
+// Change (ou définit, à l'onboarding) le code PIN AfriPay. Si un PIN existe déjà, `pinActuel`
+// doit le confirmer — sans quoi une session volée (token encore valide) suffirait à remplacer
+// le PIN sans le connaître.
 async function clientSetPin(req, res, next) {
   try {
-    const { pin } = req.body;
+    const { pin, pinActuel } = req.body;
     if (!pin || !/^\d{4,6}$/.test(pin)) throw new ApiError(400, 'Le code PIN doit contenir 4 à 6 chiffres');
+
+    const user = await userService.findById(req.auth.id);
+    await pinService.assertCurrentPinForChange({
+      account: user,
+      acteurType: 'client',
+      acteurId: req.auth.id,
+      currentPin: pinActuel,
+      req,
+    });
+
     const pinHash = await hash(pin);
     await userService.setPin(req.auth.id, pinHash);
     await securityEventService.log({
       acteurType: 'client',
       acteurId: req.auth.id,
+      telephone: user.telephone,
       evenement: 'profil_maj',
       resultat: 'succes',
       détails: 'code_pin',
@@ -215,13 +230,24 @@ async function merchantRegister(req, res, next) {
 
 async function merchantSetPin(req, res, next) {
   try {
-    const { pin } = req.body;
+    const { pin, pinActuel } = req.body;
     if (!pin || !/^\d{4,6}$/.test(pin)) throw new ApiError(400, 'Le code PIN doit contenir 4 à 6 chiffres');
+
+    const merchant = await merchantService.findById(req.auth.id);
+    await pinService.assertCurrentPinForChange({
+      account: merchant,
+      acteurType: 'marchand',
+      acteurId: req.auth.id,
+      currentPin: pinActuel,
+      req,
+    });
+
     const pinHash = await hash(pin);
     await merchantService.setPin(req.auth.id, pinHash);
     await securityEventService.log({
       acteurType: 'marchand',
       acteurId: req.auth.id,
+      telephone: merchant.telephone,
       evenement: 'profil_maj',
       resultat: 'succes',
       détails: 'code_pin',

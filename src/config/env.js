@@ -1,8 +1,37 @@
+const crypto = require('crypto');
 require('dotenv').config();
+
+const nodeEnv = process.env.NODE_ENV || 'development';
+
+// Valeurs par défaut historiques du dépôt — jamais acceptées comme secret réel, même si
+// laissées telles quelles dans .env par erreur.
+const INSECURE_JWT_DEFAULTS = new Set(['change_me_access_secret_afripay', 'change_me_refresh_secret_afripay', '']);
+
+function resolveJwtSecret(envVar) {
+  const value = process.env[envVar];
+  if (value && !INSECURE_JWT_DEFAULTS.has(value)) return value;
+
+  if (nodeEnv === 'production') {
+    throw new Error(
+      `${envVar} doit être défini avec une valeur forte et unique en production (voir backend/.env.example). ` +
+        'Démarrage refusé pour éviter de servir des tokens forgeables.'
+    );
+  }
+
+  // Dev/test : un secret aléatoire par démarrage plutôt qu'une valeur par défaut connue et
+  // committée dans le dépôt. Conséquence acceptée : les sessions ne survivent pas à un redémarrage
+  // du serveur en dev tant que la variable n'est pas fixée dans .env.
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[env] ${envVar} non défini (ou valeur par défaut du dépôt) : secret aléatoire généré pour ce ` +
+      `démarrage (dev uniquement). Définissez ${envVar} dans backend/.env pour des sessions stables entre redémarrages.`
+  );
+  return crypto.randomBytes(48).toString('hex');
+}
 
 module.exports = {
   port: process.env.PORT || 4000,
-  nodeEnv: process.env.NODE_ENV || 'development',
+  nodeEnv,
   db: {
     host: process.env.DB_HOST || '127.0.0.1',
     port: Number(process.env.DB_PORT || 3306),
@@ -11,14 +40,26 @@ module.exports = {
     password: process.env.DB_PASSWORD || '',
   },
   jwt: {
-    accessSecret: process.env.JWT_ACCESS_SECRET || 'change_me_access_secret_afripay',
-    refreshSecret: process.env.JWT_REFRESH_SECRET || 'change_me_refresh_secret_afripay',
+    accessSecret: resolveJwtSecret('JWT_ACCESS_SECRET'),
+    refreshSecret: resolveJwtSecret('JWT_REFRESH_SECRET'),
     accessExpires: process.env.JWT_ACCESS_EXPIRES || '15m',
     refreshExpires: process.env.JWT_REFRESH_EXPIRES || '30d',
   },
   business: {
     kycRechargeCapFcfa: Number(process.env.KYC_RECHARGE_CAP_FCFA || 10000),
-    pinConfirmThresholdFcfa: Number(process.env.PIN_CONFIRM_THRESHOLD_FCFA || 50000),
+    // Confirmation par PIN pour les TRANSFERTS (5.4/6.4 du cahier des charges — systématique,
+    // pas conditionnée à un montant) : le seuil par défaut est 0, donc toujours exigée. Reste
+    // configurable pour un opérateur qui voudrait explicitement l'assouplir.
+    pinConfirmThresholdFcfa: Number(process.env.PIN_CONFIRM_THRESHOLD_FCFA ?? 0),
+    // Confirmation additionnelle par PIN pour le PAIEMENT biométrique (4.3 pt.12 — celui-ci est
+    // explicitement à seuil : "peut être exigée au-delà d'un certain montant").
+    pinConfirmThresholdPaiementFcfa: Number(process.env.PIN_CONFIRM_THRESHOLD_PAIEMENT_FCFA || 50000),
+    // Plafond de sécurité par opération (recharge/transfert/achat), indépendant des règles
+    // métier KYC — empêche qu'un montant non borné (ex. "1e400") ne crée un solde arbitraire.
+    maxTransactionFcfa: Number(process.env.MAX_TRANSACTION_FCFA || 5000000),
+    // Durée de validité du code de présentation "palm_code" (mock du scan de paume) avant qu'il
+    // ne doive être régénéré — limite la fenêtre de rejeu si le QR affiché est capturé.
+    palmCodeTtlSeconds: Number(process.env.PALM_CODE_TTL_SECONDS || 90),
   },
   security: {
     // Blocage automatique après échecs répétés (exigence 9.1) : au-delà de
@@ -29,7 +70,24 @@ module.exports = {
   },
   otp: {
     expiresMin: Number(process.env.OTP_EXPIRES_MIN || 5),
-    devEcho: (process.env.OTP_DEV_ECHO || 'true') === 'true',
+    // Ne renvoie jamais le code en clair dans la réponse HTTP en production, quelle que soit la
+    // valeur de OTP_DEV_ECHO laissée dans l'environnement (oubli de configuration au déploiement).
+    devEcho: nodeEnv !== 'production' && (process.env.OTP_DEV_ECHO || 'true') === 'true',
+  },
+  cors: {
+    // Liste blanche d'origines autorisées (CORS_ALLOWED_ORIGINS="https://admin.afripay.example,https://autre.example").
+    // Vide en dev -> reflète l'origine de la requête (pratique en local) ; vide en production ->
+    // aucune origine cross-site autorisée par défaut (plus sûr que cors() sans configuration).
+    allowedOrigins: (process.env.CORS_ALLOWED_ORIGINS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  },
+  adminSeed: {
+    email: process.env.ADMIN_SEED_EMAIL || 'admin@afripay.local',
+    // Si non fourni, backend/src/scripts/initDb.js génère un mot de passe aléatoire affiché une
+    // seule fois à la création — jamais de mot de passe réel committé dans le dépôt.
+    password: process.env.ADMIN_SEED_PASSWORD || '',
   },
   cloudinary: {
     cloudName: process.env.CLOUDINARY_CLOUD_NAME || '',
