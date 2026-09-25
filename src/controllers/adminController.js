@@ -1,7 +1,8 @@
 const ApiError = require('../utils/ApiError');
 const { ok } = require('../utils/response');
 const { compare } = require('../utils/crypto');
-const { signAccessToken, signRefreshToken } = require('../utils/jwt');
+const { signAccessToken, signRefreshToken, verifyRefreshToken } = require('../utils/jwt');
+const { setAdminRefreshCookie, clearAdminRefreshCookie, readAdminRefreshCookie } = require('../utils/adminAuthCookie');
 const { v4: uuidv4 } = require('uuid');
 const adminService = require('../services/adminService');
 const userService = require('../services/userService');
@@ -18,10 +19,18 @@ const { t } = require('../i18n');
 
 const MIN_ADMIN_PASSWORD_LENGTH = 8;
 
+// Seuls les rôles habilités à statuer sur un dossier KYC/KYB (voir auditReaders dans
+// adminRoutes.js) reçoivent un lien exploitable vers la pièce d'identité elle-même — un compte
+// "support" peut consulter un profil pour aider un utilisateur sans avoir besoin de voir sa carte
+// d'identité/justificatif de domicile en clair (moindre privilège).
+function canViewDocumentFiles(role) {
+  return role === 'super_admin' || role === 'conformite';
+}
+
 // Supprime l'ancienne photo Cloudinary (best-effort, ne doit jamais faire échouer l'action
 // principale) quand la photo de profil est remplacée ou retirée.
 function deleteUploadedFile(photoUrl) {
-  destroyByUrl(photoUrl, { resourceType: 'image' });
+  destroyByUrl(photoUrl);
 }
 
 // Blocage automatique après échecs répétés (exigence 9.1) — le login admin n'était auparavant
@@ -58,8 +67,45 @@ async function login(req, res, next) {
 
     const accessToken = signAccessToken({ id: admin.id, type: 'admin', role: admin.role, nom: admin.nom });
     const refreshToken = signRefreshToken({ id: admin.id, type: 'admin', role: admin.role, nom: admin.nom });
+    setAdminRefreshCookie(res, refreshToken);
     const { mot_de_passe_hash, ...publicAdmin } = admin;
-    ok(res, { admin: publicAdmin, accessToken, refreshToken });
+    // Le refreshToken ne repart jamais dans le corps JSON (voir cookie httpOnly ci-dessus) : le
+    // front web n'a donc aucun moyen de le stocker en localStorage, même par erreur.
+    ok(res, { admin: publicAdmin, accessToken });
+  } catch (e) {
+    next(e);
+  }
+}
+
+// Rafraîchit l'accessToken admin à partir du refreshToken porté par le cookie httpOnly (jamais du
+// corps de la requête) — pendant du /auth/refresh générique (body-based) utilisé par les apps
+// mobiles, qui n'ont pas de notion de cookie de navigateur.
+async function refreshSession(req, res, next) {
+  try {
+    const refreshToken = readAdminRefreshCookie(req);
+    if (!refreshToken) throw new ApiError(401, 'Session expirée, veuillez vous reconnecter.');
+
+    const payload = verifyRefreshToken(refreshToken);
+    if (payload.type !== 'admin') throw new ApiError(401, 'Session invalide.');
+
+    const admin = await adminService.findById(payload.id);
+    if (!admin || !admin.actif) throw new ApiError(401, 'Compte introuvable ou désactivé.');
+
+    const accessToken = signAccessToken({ id: admin.id, type: 'admin', role: admin.role, nom: admin.nom });
+    const newRefreshToken = signRefreshToken({ id: admin.id, type: 'admin', role: admin.role, nom: admin.nom });
+    setAdminRefreshCookie(res, newRefreshToken);
+    ok(res, { accessToken });
+  } catch (e) {
+    clearAdminRefreshCookie(res);
+    if (e instanceof ApiError) return next(e);
+    next(new ApiError(401, 'Refresh token invalide ou expiré'));
+  }
+}
+
+async function logout(req, res, next) {
+  try {
+    clearAdminRefreshCookie(res);
+    ok(res, { loggedOut: true });
   } catch (e) {
     next(e);
   }
@@ -233,7 +279,10 @@ async function getUser(req, res, next) {
     const user = await userService.findById(req.params.id);
     if (!user) throw new ApiError(404, 'Utilisateur introuvable');
     const documents = await kycService.listDocumentsForUser(user.id);
-    ok(res, { user: userService.toPublic(user), documents });
+    ok(res, {
+      user: userService.toPublic(user),
+      documents: kycService.presentDocuments(documents, { includeFile: canViewDocumentFiles(req.auth.role) }),
+    });
   } catch (e) {
     next(e);
   }
@@ -311,7 +360,10 @@ async function getMerchant(req, res, next) {
     const merchant = await merchantService.findById(req.params.id);
     if (!merchant) throw new ApiError(404, 'Marchand introuvable');
     const documents = await kycService.listDocumentsForMerchant(merchant.id);
-    ok(res, { merchant: merchantService.toPublic(merchant), documents });
+    ok(res, {
+      merchant: merchantService.toPublic(merchant),
+      documents: kycService.presentDocuments(documents, { includeFile: canViewDocumentFiles(req.auth.role) }),
+    });
   } catch (e) {
     next(e);
   }
@@ -388,16 +440,14 @@ async function listTransactions(req, res, next) {
 async function listKycDocuments(req, res, next) {
   try {
     const { statut, dateDebut, dateFin, limit, offset } = req.query;
-    ok(
-      res,
-      await adminService.listKycDocuments({
-        statut,
-        dateDebut,
-        dateFin,
-        limit: Number(limit) || 50,
-        offset: Number(offset) || 0,
-      })
-    );
+    const docs = await adminService.listKycDocuments({
+      statut,
+      dateDebut,
+      dateFin,
+      limit: Number(limit) || 50,
+      offset: Number(offset) || 0,
+    });
+    ok(res, kycService.presentDocuments(docs, { includeFile: canViewDocumentFiles(req.auth.role) }));
   } catch (e) {
     next(e);
   }
@@ -406,16 +456,14 @@ async function listKycDocuments(req, res, next) {
 async function listKybDocuments(req, res, next) {
   try {
     const { statut, dateDebut, dateFin, limit, offset } = req.query;
-    ok(
-      res,
-      await adminService.listKybDocuments({
-        statut,
-        dateDebut,
-        dateFin,
-        limit: Number(limit) || 50,
-        offset: Number(offset) || 0,
-      })
-    );
+    const docs = await adminService.listKybDocuments({
+      statut,
+      dateDebut,
+      dateFin,
+      limit: Number(limit) || 50,
+      offset: Number(offset) || 0,
+    });
+    ok(res, kycService.presentDocuments(docs, { includeFile: canViewDocumentFiles(req.auth.role) }));
   } catch (e) {
     next(e);
   }
@@ -525,12 +573,37 @@ async function listNotifications(req, res, next) {
 
 async function sendNotification(req, res, next) {
   try {
-    const { destinataireId, typeDestinataire, type, titre, contenu } = req.body;
-    if (!destinataireId || !['client', 'marchand'].includes(typeDestinataire) || !titre || !contenu) {
-      throw new ApiError(400, 'destinataireId, typeDestinataire (client|marchand), titre et contenu sont requis');
+    const { destinataireId, typeDestinataire, type, titre, contenu, tous } = req.body;
+    if (!['client', 'marchand'].includes(typeDestinataire) || !titre || !contenu) {
+      throw new ApiError(400, 'typeDestinataire (client|marchand), titre et contenu sont requis');
     }
     const notifType = ['transaction', 'sécurité', 'système'].includes(type) ? type : 'système';
 
+    if (tous) {
+      const ids =
+        typeDestinataire === 'client' ? await userService.listAllIds() : await merchantService.listAllIds();
+      const nombreDestinataires = await notificationService.notifyMany(
+        ids,
+        typeDestinataire,
+        notifType,
+        titre,
+        contenu
+      );
+
+      await auditService.log({
+        adminId: req.auth.id,
+        adminNom: req.auth.nom,
+        action: 'notification.diffusion',
+        cibleType: typeDestinataire,
+        cibleId: null,
+        détails: { titre, type: notifType, nombreDestinataires },
+      });
+
+      ok(res, { envoyé: true, nombreDestinataires });
+      return;
+    }
+
+    if (!destinataireId) throw new ApiError(400, 'destinataireId requis');
     const destinataire =
       typeDestinataire === 'client'
         ? await userService.findById(destinataireId)
@@ -655,6 +728,8 @@ async function listAuditLogs(req, res, next) {
 
 module.exports = {
   login,
+  refreshSession,
+  logout,
   me,
   updateMyProfile,
   changeMyPassword,

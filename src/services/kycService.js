@@ -1,6 +1,22 @@
 const { v4: uuidv4 } = require('uuid');
 const { query } = require('../config/db');
 const env = require('../config/env');
+const { signedUrl: cloudinarySignedUrl } = require('../config/cloudinary');
+const { signIfLocalUpload } = require('../utils/signedUpload');
+
+// Les documents KYC/KYB sont des pièces d'identité — jamais renvoyés comme une URL statique et
+// durable. `includeFile: false` (utilisé côté admin pour les rôles non habilités, ex. "support" —
+// voir adminController.js) retire complètement le lien ; sinon on renvoie une URL à expiration
+// courte (Cloudinary `authenticated` re-signée, ou ancien fichier local /uploads/ signé).
+function presentDocument(doc, { includeFile = true } = {}) {
+  if (!doc) return doc;
+  if (!includeFile) return { ...doc, fichier_ref: null };
+  return { ...doc, fichier_ref: signIfLocalUpload(cloudinarySignedUrl(doc.fichier_ref)) };
+}
+
+function presentDocuments(docs, opts) {
+  return (docs || []).map((d) => presentDocument(d, opts));
+}
 
 async function addDocument({ userId, merchantId, typeDocument, fichierRef }) {
   const id = uuidv4();
@@ -60,4 +76,6 @@ module.exports = {
   setDocumentStatus,
   getCumulativeRechargeAmount,
   assertRechargeAllowed,
+  presentDocument,
+  presentDocuments,
 };

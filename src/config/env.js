@@ -108,5 +108,12 @@ module.exports = {
     // Provided by Tencent alongside the AppId once the tenant is set up — hosts the mobile
     // loader script the WebView embeds (see mobile clients' PalmBiometricWebView component).
     sdkHost: process.env.TENCENT_PALM_SDK_HOST || '',
+    // Minimum confidence score (Tencent's `data.score`, expected 0-1) accepted for a 1:N
+    // recognition match at the merchant's "Encaisser" screen before money moves. Re-tune once the
+    // real tenant is provisioned and Tencent's console documents their own recommended threshold —
+    // 0.8 here is a conservative placeholder, not a value sourced from Tencent.
+    minRecognitionScore: Number(process.env.TENCENT_PALM_MIN_RECOGNITION_SCORE || 0.8),
+    // How long a merchant's recognition session stays valid/single-use (palm_recognition_sessions).
+    recognitionSessionTtlSeconds: Number(process.env.TENCENT_PALM_RECOGNITION_TTL_SECONDS || 90),
   },
 };

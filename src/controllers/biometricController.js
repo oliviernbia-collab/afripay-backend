@@ -1,6 +1,7 @@
 const ApiError = require('../utils/ApiError');
 const { ok } = require('../utils/response');
 const userService = require('../services/userService');
+const merchantService = require('../services/merchantService');
 const biometricService = require('../services/biometricService');
 const palmBiometricService = require('../services/palmBiometricService');
 
@@ -60,4 +61,24 @@ async function tencentConfirmEnrollment(req, res, next) {
   }
 }
 
-module.exports = { enroll, myPalmCode, status, tencentEnrollSession, tencentConfirmEnrollment };
+// Real palm biometric recognition session for the merchant's "Encaisser" screen (option 1 —
+// see biometricService.js's mock for option 2, the QR-code fallback). Inert 503 until
+// env.tencentPalm.enabled is true, same as tencentEnrollSession above.
+async function tencentRecognitionSession(req, res, next) {
+  try {
+    const merchant = await merchantService.findById(req.auth.id);
+    const session = await palmBiometricService.getRecognitionSession(merchant);
+    ok(res, session);
+  } catch (e) {
+    next(e);
+  }
+}
+
+module.exports = {
+  enroll,
+  myPalmCode,
+  status,
+  tencentEnrollSession,
+  tencentConfirmEnrollment,
+  tencentRecognitionSession,
+};

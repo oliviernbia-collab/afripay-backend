@@ -12,7 +12,7 @@ const CLIENT_DOC_TYPES = ['cni', 'passeport', 'carte_sejour', 'selfie'];
 const MERCHANT_DOC_TYPES = ['cni', 'passeport', 'carte_sejour', 'selfie', 'rccm', 'ncc', 'justificatif_domicile', 'justificatif_activite'];
 
 function deleteUploadedFile(photoUrl) {
-  destroyByUrl(photoUrl, { resourceType: 'image' });
+  destroyByUrl(photoUrl);
 }
 
 async function uploadClientDocument(req, res, next) {
@@ -24,7 +24,7 @@ async function uploadClientDocument(req, res, next) {
       throw new ApiError(400, 'Le contenu du fichier ne correspond pas au type déclaré');
     }
 
-    const result = await uploadBuffer(req.file.buffer, { folder: 'afripay/kyc/clients' });
+    const result = await uploadBuffer(req.file.buffer, { folder: 'afripay/kyc/clients', type: 'authenticated' });
     const fichierRef = result.secure_url;
     const docId = await kycService.addDocument({ userId: req.auth.id, typeDocument, fichierRef });
 
@@ -44,7 +44,7 @@ async function uploadMerchantDocument(req, res, next) {
       throw new ApiError(400, 'Le contenu du fichier ne correspond pas au type déclaré');
     }
 
-    const result = await uploadBuffer(req.file.buffer, { folder: 'afripay/kyc/marchands' });
+    const result = await uploadBuffer(req.file.buffer, { folder: 'afripay/kyc/marchands', type: 'authenticated' });
     const fichierRef = result.secure_url;
     const docId = await kycService.addDocument({ merchantId: req.auth.id, typeDocument, fichierRef });
 
@@ -58,7 +58,7 @@ async function uploadMerchantDocument(req, res, next) {
 async function myClientDocuments(req, res, next) {
   try {
     const docs = await kycService.listDocumentsForUser(req.auth.id);
-    ok(res, docs);
+    ok(res, kycService.presentDocuments(docs));
   } catch (e) {
     next(e);
   }
@@ -67,7 +67,7 @@ async function myClientDocuments(req, res, next) {
 async function myMerchantDocuments(req, res, next) {
   try {
     const docs = await kycService.listDocumentsForMerchant(req.auth.id);
-    ok(res, docs);
+    ok(res, kycService.presentDocuments(docs));
   } catch (e) {
     next(e);
   }
@@ -151,6 +151,59 @@ async function removeMyPhoto(req, res, next) {
   }
 }
 
+// Logo de profil marchand (mobilepro) — même schéma que la photo de profil client.
+async function uploadMyLogo(req, res, next) {
+  try {
+    if (!req.file) throw new ApiError(400, 'Fichier requis (champ "logo")');
+    if (!matchesSignature(req.file.buffer, req.file.mimetype)) {
+      throw new ApiError(400, 'Le contenu du fichier ne correspond pas au type déclaré');
+    }
+
+    const merchant = await merchantService.findById(req.auth.id);
+    const result = await uploadBuffer(req.file.buffer, { folder: 'afripay/logos', resourceType: 'image' });
+    const logoUrl = result.secure_url;
+    const updated = await merchantService.updateProfile(req.auth.id, { logo_url: logoUrl });
+
+    deleteUploadedFile(merchant?.logo_url);
+
+    await securityEventService.log({
+      acteurType: 'marchand',
+      acteurId: req.auth.id,
+      telephone: updated.telephone,
+      evenement: 'profil_maj',
+      resultat: 'succes',
+      détails: 'logo',
+      ip: req.ip,
+    });
+
+    ok(res, merchantService.toPublic(updated));
+  } catch (e) {
+    next(e);
+  }
+}
+
+async function removeMyLogo(req, res, next) {
+  try {
+    const merchant = await merchantService.findById(req.auth.id);
+    const updated = await merchantService.updateProfile(req.auth.id, { logo_url: null });
+    deleteUploadedFile(merchant?.logo_url);
+
+    await securityEventService.log({
+      acteurType: 'marchand',
+      acteurId: req.auth.id,
+      telephone: updated.telephone,
+      evenement: 'profil_maj',
+      resultat: 'succes',
+      détails: 'logo_supprimé',
+      ip: req.ip,
+    });
+
+    ok(res, merchantService.toPublic(updated));
+  } catch (e) {
+    next(e);
+  }
+}
+
 async function myKycStatus(req, res, next) {
   try {
     const user = await userService.findById(req.auth.id);
@@ -169,5 +222,7 @@ module.exports = {
   submitPersonalInfo,
   uploadMyPhoto,
   removeMyPhoto,
+  uploadMyLogo,
+  removeMyLogo,
   myKycStatus,
 };

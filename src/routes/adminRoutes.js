@@ -13,6 +13,10 @@ const superAdminOnly = [authenticate, requireType('admin'), requireRole('super_a
 const auditReaders = [authenticate, requireType('admin'), requireRole('super_admin', 'conformite')];
 
 router.post('/login', loginLimiter, adminController.login);
+// Pas de middleware d'auth ici : le refreshToken voyage dans le cookie httpOnly, pas dans un
+// header Authorization (un accessToken déjà expiré ne pourrait de toute façon plus servir ici).
+router.post('/refresh', loginLimiter, adminController.refreshSession);
+router.post('/logout', adminController.logout);
 router.get('/me', ...adminOnly, adminController.me);
 router.patch('/me', ...adminOnly, adminController.updateMyProfile);
 router.post('/me/mot-de-passe', ...adminOnly, adminController.changeMyPassword);

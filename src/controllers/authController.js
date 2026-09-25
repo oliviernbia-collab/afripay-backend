@@ -435,6 +435,92 @@ async function merchantLogin(req, res, next) {
   }
 }
 
+// Objets distincts de ceux du client (RESET_OBJET) bien que le scénario soit identique : un
+// numéro de téléphone peut être enregistré à la fois côté clients et côté merchants (deux tables,
+// deux contraintes UNIQUE indépendantes), et otpService.verifyOtp ne vérifie que (téléphone,
+// objet) — avec le même objet, un OTP de réinitialisation marchand aurait aussi pu servir à
+// réinitialiser le compte client du même numéro (et réciproquement).
+const RESET_OBJET_MARCHAND = { pin: 'reinitialisation_pin_marchand', password: 'reinitialisation_mdp_marchand' };
+
+// Étape 1 de la récupération marchand (code PIN ou mot de passe oubliés) — voir
+// clientRequestResetOtp, même logique côté merchants.
+async function merchantRequestResetOtp(req, res, next) {
+  try {
+    const { telephone, type } = req.body;
+    const objet = RESET_OBJET_MARCHAND[type];
+    if (!telephone || !objet) throw new ApiError(400, "telephone et type ('pin' ou 'password') sont requis");
+
+    const merchant = await merchantService.findByPhone(telephone);
+    if (!merchant) throw new ApiError(404, 'Aucun compte trouvé avec ce numéro');
+
+    const result = await otpService.generateOtp(telephone, objet);
+    ok(res, { sent: true, devCode: result.devCode });
+  } catch (e) {
+    next(e);
+  }
+}
+
+// Étape 2 : remplace le code PIN sans connaître l'ancien, la vérification par OTP en tenant lieu.
+async function merchantResetPin(req, res, next) {
+  try {
+    const { telephone, otp, pin } = req.body;
+    if (!telephone || !otp) throw new ApiError(400, 'telephone et otp sont requis');
+    if (!pin || !/^\d{4,6}$/.test(pin)) throw new ApiError(400, 'Le code PIN doit contenir 4 à 6 chiffres');
+
+    const merchant = await merchantService.findByPhone(telephone);
+    if (!merchant) throw new ApiError(404, 'Aucun compte trouvé avec ce numéro');
+
+    await otpService.verifyOtp(telephone, otp, RESET_OBJET_MARCHAND.pin);
+
+    const pinHash = await hash(pin);
+    await merchantService.setPin(merchant.id, pinHash);
+    await securityEventService.log({
+      acteurType: 'marchand',
+      acteurId: merchant.id,
+      telephone,
+      evenement: 'profil_maj',
+      resultat: 'succes',
+      détails: 'code_pin_reinit',
+      ip: req.ip,
+    });
+    ok(res, { updated: true });
+  } catch (e) {
+    next(e);
+  }
+}
+
+// Étape 2 pour le mot de passe : révoque aussi toutes les sessions actives, comme côté client.
+async function merchantResetPassword(req, res, next) {
+  try {
+    const { telephone, otp, motDePasse } = req.body;
+    if (!telephone || !otp) throw new ApiError(400, 'telephone et otp sont requis');
+    if (!motDePasse || motDePasse.length < 6) {
+      throw new ApiError(400, 'Le nouveau mot de passe doit contenir au moins 6 caractères');
+    }
+
+    const merchant = await merchantService.findByPhone(telephone);
+    if (!merchant) throw new ApiError(404, 'Aucun compte trouvé avec ce numéro');
+
+    await otpService.verifyOtp(telephone, otp, RESET_OBJET_MARCHAND.password);
+
+    const motDePasseHash = await hash(motDePasse);
+    await merchantService.setPassword(merchant.id, motDePasseHash);
+    await deviceSessionService.revokeAllSessions('marchand', merchant.id);
+    await securityEventService.log({
+      acteurType: 'marchand',
+      acteurId: merchant.id,
+      telephone,
+      evenement: 'profil_maj',
+      resultat: 'succes',
+      détails: 'mot_de_passe_reinit',
+      ip: req.ip,
+    });
+    ok(res, { updated: true });
+  } catch (e) {
+    next(e);
+  }
+}
+
 // --- COMMUN ---------------------------------------------------------
 
 async function refresh(req, res, next) {
@@ -517,6 +603,9 @@ module.exports = {
   merchantRegister,
   merchantSetPin,
   merchantLogin,
+  merchantRequestResetOtp,
+  merchantResetPin,
+  merchantResetPassword,
   refresh,
   me,
   listMySessions,

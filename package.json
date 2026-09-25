@@ -8,11 +8,13 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "db:init": "node src/scripts/initDb.js",
+    "loadtest": "node src/scripts/loadtest.js",
     "db:seed-admin-hash": "node src/scripts/generateAdminHash.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cloudinary": "^2.11.0",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
@@ -25,6 +27,7 @@
     "uuid": "^9.0.1"
   },
   "devDependencies": {
+    "autocannon": "^8.0.0",
     "nodemon": "^3.1.4"
   }
 }

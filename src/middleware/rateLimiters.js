@@ -19,4 +19,17 @@ const otpLimiter = rateLimit({
   message: { success: false, message: "Trop de demandes de code. Réessayez plus tard." },
 });
 
-module.exports = { loginLimiter, otpLimiter };
+// Endpoints qui *consomment* un OTP (inscription, réinitialisation PIN/mot de passe) : jusqu'ici
+// seule la demande de code (otpLimiter) était limitée, pas sa vérification — un code à 6 chiffres
+// (1M possibilités) reste brute-forçable dans sa fenêtre de validité (quelques minutes) sans
+// limiteur dédié ici. Plus généreux qu'otpLimiter (une frappe erronée légitime ne doit pas bloquer
+// l'utilisateur), mais suffisant pour rendre un brute-force du code impraticable.
+const otpConsumeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Trop de tentatives. Réessayez plus tard.' },
+});
+
+module.exports = { loginLimiter, otpLimiter, otpConsumeLimiter };

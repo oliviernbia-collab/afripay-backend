@@ -32,5 +32,13 @@ router.post(
   kycController.uploadMerchantDocument
 );
 router.get('/marchand/documents', authenticate, requireType('marchand'), kycController.myMerchantDocuments);
+router.post(
+  '/marchand/logo',
+  authenticate,
+  requireType('marchand'),
+  uploadPhoto.single('logo'),
+  kycController.uploadMyLogo
+);
+router.delete('/marchand/logo', authenticate, requireType('marchand'), kycController.removeMyLogo);
 
 module.exports = router;

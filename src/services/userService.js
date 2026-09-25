@@ -1,5 +1,6 @@
 const { v4: uuidv4 } = require('uuid');
 const { query } = require('../config/db');
+const { signIfLocalUpload } = require('../utils/signedUpload');
 
 async function findByPhone(telephone) {
   const rows = await query('SELECT * FROM users WHERE telephone = :telephone LIMIT 1', { telephone });
@@ -48,10 +49,25 @@ async function updateProfile(userId, fields) {
   return findById(userId);
 }
 
+async function listAllIds() {
+  const rows = await query('SELECT id FROM users', {});
+  return rows.map((r) => r.id);
+}
+
 function toPublic(user) {
   if (!user) return null;
   const { mot_de_passe_hash, code_pin_hash, ...rest } = user;
-  return rest;
+  return { ...rest, photo_url: signIfLocalUpload(rest.photo_url) };
 }
 
-module.exports = { findByPhone, findById, createUser, setPin, setPassword, updateKycStatus, updateProfile, toPublic };
+module.exports = {
+  findByPhone,
+  findById,
+  createUser,
+  setPin,
+  setPassword,
+  updateKycStatus,
+  updateProfile,
+  listAllIds,
+  toPublic,
+};
