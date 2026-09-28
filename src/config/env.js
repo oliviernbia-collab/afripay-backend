@@ -29,6 +29,32 @@ function resolveJwtSecret(envVar) {
   return crypto.randomBytes(48).toString('hex');
 }
 
+// Même logique que resolveJwtSecret ci-dessus, pour une clé de chiffrement (32 octets hex = 64
+// caractères) plutôt qu'un secret de signature.
+function resolveEncryptionKey(envVar) {
+  const value = process.env[envVar];
+  if (value) {
+    const buf = Buffer.from(value, 'hex');
+    if (buf.length === 32) return buf;
+    // eslint-disable-next-line no-console
+    console.warn(`[env] ${envVar} doit être 32 octets en hexadécimal (64 caractères) — valeur ignorée.`);
+  }
+
+  if (nodeEnv === 'production') {
+    throw new Error(
+      `${envVar} doit être défini (32 octets hex, voir backend/.env.example) en production. ` +
+        'Démarrage refusé pour éviter de chiffrer des données sensibles avec une clé non persistante.'
+    );
+  }
+
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[env] ${envVar} non défini (ou invalide) : clé aléatoire générée pour ce démarrage (dev uniquement). ` +
+      `Définissez ${envVar} dans backend/.env pour que les gabarits restent déchiffrables entre redémarrages.`
+  );
+  return crypto.randomBytes(32);
+}
+
 module.exports = {
   port: process.env.PORT || 4000,
   nodeEnv,
@@ -57,9 +83,15 @@ module.exports = {
     // Plafond de sécurité par opération (recharge/transfert/achat), indépendant des règles
     // métier KYC — empêche qu'un montant non borné (ex. "1e400") ne crée un solde arbitraire.
     maxTransactionFcfa: Number(process.env.MAX_TRANSACTION_FCFA || 5000000),
-    // Durée de validité du code de présentation "palm_code" (mock du scan de paume) avant qu'il
-    // ne doive être régénéré — limite la fenêtre de rejeu si le QR affiché est capturé.
+    // Durée de validité du code de présentation "palm_code" (repli QR quand la reconnaissance
+    // caméra échoue/est indisponible) avant qu'il ne doive être régénéré — limite la fenêtre de
+    // rejeu si le QR affiché est capturé.
     palmCodeTtlSeconds: Number(process.env.PALM_CODE_TTL_SECONDS || 90),
+    // Score de similarité minimal (0-1, voir palmVisionService.matchScore) accepté pour identifier
+    // un client par reconnaissance de paume (photo) avant de débiter son portefeuille. Valeur de
+    // départ prudente, à recalibrer avec de vraies photos (précision/faux-positifs) une fois testé
+    // en conditions réelles — pas une valeur validée scientifiquement.
+    palmCvMinScore: Number(process.env.PALM_CV_MIN_SCORE || 0.55),
   },
   security: {
     // Blocage automatique après échecs répétés (exigence 9.1) : au-delà de
@@ -67,6 +99,9 @@ module.exports = {
     // temporairement bloqué pour l'événement concerné (connexion, PIN).
     maxFailedAttempts: Number(process.env.SECURITY_MAX_FAILED_ATTEMPTS || 5),
     lockoutMinutes: Number(process.env.SECURITY_LOCKOUT_MINUTES || 15),
+    // Clé AES-256 (32 octets) chiffrant les gabarits biométriques de paume au repos (colonne
+    // `gabarit_chiffré`, voir utils/crypto.js encryptTemplate/decryptTemplate).
+    palmTemplateEncKey: resolveEncryptionKey('PALM_TEMPLATE_ENC_KEY'),
   },
   otp: {
     expiresMin: Number(process.env.OTP_EXPIRES_MIN || 5),
@@ -93,27 +128,5 @@ module.exports = {
     cloudName: process.env.CLOUDINARY_CLOUD_NAME || '',
     apiKey: process.env.CLOUDINARY_API_KEY || '',
     apiSecret: process.env.CLOUDINARY_API_SECRET || '',
-  },
-  // Real palm-vein/palm-print biometric payment (cahier des charges section 4), via Tencent
-  // PalmAI Enterprise KYC — see backend/src/services/tencent/. `enabled` stays false until a
-  // real tenant/AppId/keys are provisioned by Tencent (this is a sales-gated enterprise product,
-  // not self-service); until then the app keeps using the QR-code enrolment mock.
-  tencentPalm: {
-    enabled: (process.env.TENCENT_PALM_ENABLED || 'false') === 'true',
-    appId: process.env.TENCENT_PALM_APP_ID || '',
-    secretId: process.env.TENCENT_PALM_SECRET_ID || '',
-    secretKey: process.env.TENCENT_PALM_SECRET_KEY || '',
-    apiHost: process.env.TENCENT_PALM_API_HOST || 'open.intl.palm.tencent.com',
-    apiVersion: process.env.TENCENT_PALM_API_VERSION || '2025-07-15',
-    // Provided by Tencent alongside the AppId once the tenant is set up — hosts the mobile
-    // loader script the WebView embeds (see mobile clients' PalmBiometricWebView component).
-    sdkHost: process.env.TENCENT_PALM_SDK_HOST || '',
-    // Minimum confidence score (Tencent's `data.score`, expected 0-1) accepted for a 1:N
-    // recognition match at the merchant's "Encaisser" screen before money moves. Re-tune once the
-    // real tenant is provisioned and Tencent's console documents their own recommended threshold —
-    // 0.8 here is a conservative placeholder, not a value sourced from Tencent.
-    minRecognitionScore: Number(process.env.TENCENT_PALM_MIN_RECOGNITION_SCORE || 0.8),
-    // How long a merchant's recognition session stays valid/single-use (palm_recognition_sessions).
-    recognitionSessionTtlSeconds: Number(process.env.TENCENT_PALM_RECOGNITION_TTL_SECONDS || 90),
   },
 };

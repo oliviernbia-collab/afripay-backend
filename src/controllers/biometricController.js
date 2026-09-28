@@ -1,14 +1,14 @@
 const ApiError = require('../utils/ApiError');
 const { ok } = require('../utils/response');
-const userService = require('../services/userService');
-const merchantService = require('../services/merchantService');
 const biometricService = require('../services/biometricService');
-const palmBiometricService = require('../services/palmBiometricService');
 
 // Enrôlement (étape finale du KYC, section 4.1). Ne peut être (re)fait que par le client authentifié.
+// Nécessite une vraie photo de la paume (multipart, voir middleware/upload.js uploadPhoto) —
+// l'extraction du gabarit se fait localement, voir palmVisionService.js.
 async function enroll(req, res, next) {
   try {
-    const { palmCode } = await biometricService.enrollPalm(req.auth.id);
+    if (!req.file) throw new ApiError(400, 'Photo de la paume requise pour l’enrôlement');
+    const { palmCode } = await biometricService.enrollPalm(req.auth.id, req.file.buffer);
     ok(res, { palmCode, message: 'Gabarit biométrique généré et enrôlé avec succès' });
   } catch (e) {
     next(e);
@@ -37,48 +37,8 @@ async function status(req, res, next) {
   }
 }
 
-// Real palm biometric enrolment (Tencent PalmAI) — inert 503 until env.tencentPalm.enabled is
-// true (see palmBiometricService.js). The mobile app falls back to the QR-code mock (`enroll`
-// above) when this errors out or the feature flag on its side is off.
-async function tencentEnrollSession(req, res, next) {
-  try {
-    const user = await userService.findById(req.auth.id);
-    const session = await palmBiometricService.getEnrollmentSession(user);
-    ok(res, session);
-  } catch (e) {
-    next(e);
-  }
-}
-
-// Called by the mobile app right after the Tencent Palm widget reports a successful
-// 'registration' result — see PalmBiometricWebView's onResult handler in KycEnrollScreen.js.
-async function tencentConfirmEnrollment(req, res, next) {
-  try {
-    await palmBiometricService.confirmEnrollment(req.auth.id);
-    ok(res, { enrolled: true });
-  } catch (e) {
-    next(e);
-  }
-}
-
-// Real palm biometric recognition session for the merchant's "Encaisser" screen (option 1 —
-// see biometricService.js's mock for option 2, the QR-code fallback). Inert 503 until
-// env.tencentPalm.enabled is true, same as tencentEnrollSession above.
-async function tencentRecognitionSession(req, res, next) {
-  try {
-    const merchant = await merchantService.findById(req.auth.id);
-    const session = await palmBiometricService.getRecognitionSession(merchant);
-    ok(res, session);
-  } catch (e) {
-    next(e);
-  }
-}
-
 module.exports = {
   enroll,
   myPalmCode,
   status,
-  tencentEnrollSession,
-  tencentConfirmEnrollment,
-  tencentRecognitionSession,
 };

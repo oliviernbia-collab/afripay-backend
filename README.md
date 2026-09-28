@@ -24,7 +24,7 @@ Compte admin de démo : `admin@afripay.africa` / `AfriPay@2026` (à changer en p
 src/
   config/      connexion MySQL (mysql2/promise), variables d'environnement
   middleware/  auth JWT, upload (multer), gestion d'erreurs
-  services/    logique métier (comptes, wallets, KYC, biométrie mock, transactions, recharges, transferts, admin)
+  services/    logique métier (comptes, wallets, KYC, reconnaissance de paume, transactions, recharges, transferts, admin)
   controllers/ handlers HTTP (validation des entrées, appel des services, réponses)
   routes/      déclaration des routes Express par domaine
   scripts/     initDb.js (exécute database/schema.sql), generateAdminHash.js
@@ -33,7 +33,7 @@ src/
 ```
 
 ## Points d'attention pour la mise en production
-- **Biométrie** : le matching palmaire réel n'est pas implémenté (aucun capteur disponible dans cet environnement). Le flux utilise un `palmCode` scanné en QR (voir `src/services/biometricService.js`) — à remplacer par un vrai SDK de matching 1:N sur `gabarit_chiffré` le jour où un capteur/algorithme propriétaire est intégré. Le contrat d'API (`POST /marchand/encaisser`) n'a pas besoin de changer.
+- **Biométrie** : reconnaissance de paume réelle et locale (photo → détection de main → gabarit LBP → comparaison 1:N), voir `src/services/palmVisionService.js` — aucune API biométrique externe, aucune clé requise. Ce n'est pas l'équivalent d'un capteur veineux infrarouge de qualité bancaire : la précision et la détection de vivacité (liveness) restent best-effort (voir les commentaires du fichier). Le QR (`palmCode`, `src/services/biometricService.js`) reste un repli si la caméra/l'éclairage posent problème.
 - **Recharge / transfert externe** : les appels aux agrégateurs (Wave, Orange Money, Moov Money, MTN MoMo, Djamo, PSP Visa) sont simulés (`rechargeService.js`, `transferService.js`) et réussissent toujours — à remplacer par les vraies intégrations API + contrats marchands (section 3.4 du cahier des charges).
 - **Documents KYC** : stockés sur disque local (`backend/uploads/`) pour ce scaffold. En production, utiliser un coffre-fort documentaire chiffré distinct de la base transactionnelle (section 3.3/9.1).
 - **OTP SMS** : mock (le code est loggé côté serveur et renvoyé en dev via `devCode`). Brancher un vrai fournisseur SMS avant la mise en production et désactiver `OTP_DEV_ECHO`.

@@ -21,14 +21,41 @@ function randomReference(prefix) {
   return `${prefix}-${Date.now()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
 }
 
-// Génère un gabarit biométrique chiffré factice (mock) à partir d'un secret serveur.
-// Ne stocke jamais d'image brute : uniquement un hash non réversible + un palm_code
-// public court qui sert d'identifiant de présentation (cf. README biométrie).
-function generatePalmTemplate(userId) {
-  const raw = `${userId}-${crypto.randomBytes(16).toString('hex')}`;
-  const gabarit = crypto.createHash('sha256').update(raw).digest('hex');
-  const palmCode = crypto.randomBytes(9).toString('base64url'); // identifiant court, unique, non réversible vers l'image
-  return { gabarit, palmCode };
+// Identifiant court de présentation (QR code, repli quand la reconnaissance caméra échoue/est
+// indisponible) — ne permet en aucun cas de retrouver le gabarit biométrique réel.
+function generatePalmCode() {
+  return crypto.randomBytes(9).toString('base64url');
 }
 
-module.exports = { hash, compare, randomDigits, randomReference, generatePalmTemplate };
+const TEMPLATE_ENC_ALGO = 'aes-256-gcm';
+
+// Chiffre le gabarit biométrique (paume) au repos avant stockage en base (colonne
+// `gabarit_chiffré`) — AES-256-GCM avec une clé serveur (voir env.security.palmTemplateEncKey),
+// jamais l'image brute. `key` doit être un Buffer de 32 octets.
+function encryptTemplate(buffer, key) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv(TEMPLATE_ENC_ALGO, key, iv);
+  const encrypted = Buffer.concat([cipher.update(buffer), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return Buffer.concat([iv, authTag, encrypted]).toString('base64');
+}
+
+function decryptTemplate(payloadBase64, key) {
+  const payload = Buffer.from(payloadBase64, 'base64');
+  const iv = payload.subarray(0, 12);
+  const authTag = payload.subarray(12, 28);
+  const encrypted = payload.subarray(28);
+  const decipher = crypto.createDecipheriv(TEMPLATE_ENC_ALGO, key, iv);
+  decipher.setAuthTag(authTag);
+  return Buffer.concat([decipher.update(encrypted), decipher.final()]);
+}
+
+module.exports = {
+  hash,
+  compare,
+  randomDigits,
+  randomReference,
+  generatePalmCode,
+  encryptTemplate,
+  decryptTemplate,
+};
