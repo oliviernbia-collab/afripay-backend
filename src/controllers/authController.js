@@ -70,6 +70,8 @@ async function clientRegister(req, res, next) {
       type: 'système',
       titre: t(user.langue, 'notif.welcome.title'),
       contenu: t(user.langue, 'notif.welcome.body'),
+      titreCle: 'notif.welcome.title',
+      contenuCle: 'notif.welcome.body',
     });
 
     const tokens = issueTokens(user.id, 'client');

@@ -1,9 +1,11 @@
 const { v4: uuidv4 } = require('uuid');
 const { query, pool } = require('../config/db');
-const { randomReference } = require('../utils/crypto');
 const ApiError = require('../utils/ApiError');
 const walletService = require('./walletService');
 const transactionService = require('./transactionService');
+const moneyFusionService = require('./moneyFusionService');
+const notificationService = require('./notificationService');
+const { t } = require('../i18n');
 
 // Transfert interne AfriPay (Client -> Client, Marchand -> Client, Marchand -> Marchand).
 async function internalTransfer({ fromWalletId, toWalletId, montant, libelle }) {
@@ -26,9 +28,20 @@ async function internalTransfer({ fromWalletId, toWalletId, montant, libelle }) 
 const VALID_OPERATORS = ['wave', 'orange_money', 'moov_money', 'mtn_money'];
 
 /**
- * MOCK transfert sortant vers Mobile Money externe (section 6.4). En production, chaque opérateur
- * expose une API de "disbursement" nécessitant un contrat marchand dédié. Ici la simulation réussit
- * immédiatement pour permettre de tester le parcours Marchand de bout en bout.
+ * RETRAIT SORTANT VERS MOBILE MONEY RÉEL (payout MoneyFusion) — section 6.4.
+ * ---------------------------------------------------------------------
+ * Le wallet marchand est débité immédiatement (verrouillé, voir plus bas) car MoneyFusion ne
+ * garantit la confirmation qu'après coup, par webhook — si on créditait/débitait seulement à la
+ * confirmation, rien n'empêcherait le marchand de relancer un retrait pendant que le premier est
+ * encore en vol. La transaction est créée `en_attente` ; le webhook `payout.session.completed`
+ * la passe à `réussi` (rien d'autre à faire, déjà débité), et `payout.session.cancelled` la passe
+ * à `échoué` ET REMBOURSE le wallet (voir controllers/paiementWebhookController.js) — contrairement
+ * à l'ancien mock, qui ne pouvait jamais échouer et n'avait donc pas besoin de ce remboursement.
+ *
+ * ATTENTION déploiement : l'API payout de MoneyFusion exige une adresse IP sortante FIXE,
+ * whitelistée dans leur tableau de bord — inutilisable depuis un poste de développement local
+ * (XAMPP) tel quel. Voir moneyFusionService.js et le README pour le détail.
+ * ---------------------------------------------------------------------
  */
 async function externalTransfer({ merchant, opérateurDestination, numéroDestinataire, montant }) {
   if (!VALID_OPERATORS.includes(opérateurDestination)) {
@@ -66,15 +79,30 @@ async function externalTransfer({ merchant, opérateurDestination, numéroDestin
     walletSourceId: wallet.id,
     walletDestinationId: null,
     montant: amount,
-    statut: 'réussi',
+    statut: 'en_attente',
     méthode: 'mobile_money',
     libelle: `Transfert vers ${opérateurDestination} (${numéroDestinataire})`,
   });
 
+  let tokenPay;
+  try {
+    ({ tokenPay } = await moneyFusionService.initierPayout({
+      montant: amount,
+      telephone: numéroDestinataire,
+      opérateur: opérateurDestination,
+    }));
+  } catch (e) {
+    // L'initiation elle-même a échoué (pas juste "en attente de confirmation") : rembourser tout
+    // de suite plutôt que de laisser le marchand avec un wallet débité pour rien.
+    await walletService.creditWallet(wallet.id, amount);
+    await query("UPDATE transactions SET statut = 'échoué' WHERE id = :id", { id: transaction.id });
+    throw e;
+  }
+
   const id = uuidv4();
   await query(
-    `INSERT INTO transfer_external (id, merchant_id, transaction_id, opérateur_destination, numéro_destinataire, montant, statut)
-     VALUES (:id, :merchantId, :transactionId, :operateurDest, :numeroDest, :montant, 'réussi')`,
+    `INSERT INTO transfer_external (id, merchant_id, transaction_id, opérateur_destination, numéro_destinataire, montant, statut, reference_externe)
+     VALUES (:id, :merchantId, :transactionId, :operateurDest, :numeroDest, :montant, 'en_attente', :refExterne)`,
     {
       id,
       merchantId: merchant.id,
@@ -82,6 +110,7 @@ async function externalTransfer({ merchant, opérateurDestination, numéroDestin
       operateurDest: opérateurDestination,
       numeroDest: numéroDestinataire,
       montant: amount,
+      refExterne: tokenPay,
     }
   );
 
@@ -89,4 +118,46 @@ async function externalTransfer({ merchant, opérateurDestination, numéroDestin
   return { transaction, wallet: updatedWallet };
 }
 
-module.exports = { internalTransfer, externalTransfer, VALID_OPERATORS };
+// Appelé par le webhook MoneyFusion (voir controllers/paiementWebhookController.js) — jamais par
+// une app mobile. `tokenPay` = référence renvoyée par initierPayout, retrouvée dans
+// transfer_external.reference_externe. Le wallet a déjà été débité à l'initiation (voir
+// externalTransfer ci-dessus) : en cas d'échec confirmé, on le REMBOURSE ; en cas de succès, rien
+// de plus à faire côté wallet. Ne fait rien (silencieusement) si aucun retrait `en_attente` ne
+// correspond (déjà traité, ou token jamais émis par nous).
+async function confirmerPayout(tokenPay, { réussi }) {
+  const rows = await query(
+    "SELECT * FROM transfer_external WHERE reference_externe = :tokenPay AND statut = 'en_attente' LIMIT 1",
+    { tokenPay }
+  );
+  const retrait = rows[0];
+  if (!retrait) return false;
+
+  const nouveauStatut = réussi ? 'réussi' : 'échoué';
+  await query('UPDATE transfer_external SET statut = :statut WHERE id = :id', { statut: nouveauStatut, id: retrait.id });
+  if (retrait.transaction_id) {
+    await query('UPDATE transactions SET statut = :statut WHERE id = :id', { statut: nouveauStatut, id: retrait.transaction_id });
+  }
+  if (!réussi) {
+    const wallet = await walletService.getWalletByOwner(retrait.merchant_id, 'marchand');
+    await walletService.creditWallet(wallet.id, retrait.montant);
+  }
+
+  // Marchands sans colonne `langue` : titre/contenu par défaut restent français, mais
+  // titreCle/contenuCle permettent à l'app Marchand de retraduire dans sa langue active (même
+  // principe que les autres notifications marchand, voir merchantPaymentController.js).
+  const cle = réussi ? 'notif.payoutConfirmed' : 'notif.payoutFailed';
+  await notificationService.notify({
+    destinataireId: retrait.merchant_id,
+    typeDestinataire: 'marchand',
+    type: 'transaction',
+    titre: t(undefined, `${cle}.title`),
+    contenu: t(undefined, `${cle}.body`, { montant: retrait.montant }),
+    titreCle: `${cle}.title`,
+    contenuCle: `${cle}.body`,
+    params: { montant: retrait.montant },
+  });
+
+  return true;
+}
+
+module.exports = { internalTransfer, externalTransfer, confirmerPayout, VALID_OPERATORS };

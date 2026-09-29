@@ -307,6 +307,10 @@ async function reviewUserKyc(req, res, next) {
         .map((d) => kycService.setDocumentStatus(d.id, decision === 'validé' ? 'validé' : 'rejeté', motif))
     );
 
+    // params.decision reste la valeur BRUTE de l'enum (ex. 'rejeté'), jamais pré-traduite — la
+    // sous-traduction (status.kyc.*) se refait aussi côté client à l'affichage, voir
+    // notificationService.notify.
+    const kycContenuCle = decision === 'validé' ? 'notif.kycUpdate.validated' : 'notif.kycUpdate.other';
     await notificationService.notify({
       destinataireId: user.id,
       typeDestinataire: 'client',
@@ -319,6 +323,9 @@ async function reviewUserKyc(req, res, next) {
               decision: t(user.langue, `status.kyc.${decision}`),
               motif: motif || '',
             }).trim(),
+      titreCle: 'notif.kycUpdate.title',
+      contenuCle: kycContenuCle,
+      params: { decision, motif: motif || '' },
     });
 
     await auditService.log({
@@ -388,15 +395,25 @@ async function reviewMerchantKyb(req, res, next) {
         .map((d) => kycService.setDocumentStatus(d.id, decision === 'validé' ? 'validé' : 'rejeté', motif))
     );
 
+    // Auparavant du texte français codé en dur (jamais traduit) : titreCle/contenuCle permettent
+    // désormais à l'app Marchand de retraduire dans sa langue active (voir reviewKyc ci-dessus pour
+    // le même principe côté client, et notificationService.notify).
+    const kybContenuCle = decision === 'validé' ? 'notif.kybUpdate.validated' : 'notif.kybUpdate.other';
     await notificationService.notify({
       destinataireId: merchant.id,
       typeDestinataire: 'marchand',
       type: 'sécurité',
-      titre: 'Mise à jour de votre dossier KYB',
+      titre: t(undefined, 'notif.kybUpdate.title'),
       contenu:
         decision === 'validé'
-          ? "Votre dossier a été validé. L'encaissement par paume de main est activé."
-          : `Votre dossier a été ${decision}. ${motif || ''}`.trim(),
+          ? t(undefined, 'notif.kybUpdate.validated')
+          : t(undefined, 'notif.kybUpdate.other', {
+              decision: t(undefined, `status.kyc.${decision}`),
+              motif: motif || '',
+            }).trim(),
+      titreCle: 'notif.kybUpdate.title',
+      contenuCle: kybContenuCle,
+      params: { decision, motif: motif || '' },
     });
 
     await auditService.log({

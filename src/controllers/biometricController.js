@@ -11,6 +11,12 @@ async function enroll(req, res, next) {
     const { palmCode } = await biometricService.enrollPalm(req.auth.id, req.file.buffer);
     ok(res, { palmCode, message: 'Gabarit biométrique généré et enrôlé avec succès' });
   } catch (e) {
+    // Rejet qualité (422, voir palmVisionService.extractTemplate) : journalisé pour pouvoir
+    // diagnostiquer a posteriori QUELLE porte a été franchie (flou/luminosité/cadrage/aucune main)
+    // — contrairement à recognizeByPhoto, l'enrôlement n'écrit rien dans biometric_scan_logs.
+    if (e.statusCode === 422) {
+      console.warn(`[biometrie] enrôlement rejeté pour user ${req.auth.id}: ${e.message}`);
+    }
     next(e);
   }
 }

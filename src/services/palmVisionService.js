@@ -1,8 +1,17 @@
+const path = require('path');
 const tf = require('@tensorflow/tfjs');
-require('@tensorflow/tfjs-backend-cpu');
+const tfWasm = require('@tensorflow/tfjs-backend-wasm');
 const handPoseDetection = require('@tensorflow-models/hand-pose-detection');
 const { Jimp } = require('jimp');
 const ApiError = require('../utils/ApiError');
+const env = require('../config/env');
+
+// Backend WASM plutôt que CPU pur JS : ~10-20x plus rapide en pratique pour l'inférence du
+// détecteur de main (mesuré : ~2000ms/photo en CPU pur JS contre ~100-300ms en WASM sur ce poste),
+// sans compilation native (le binaire .wasm est livré tel quel dans le paquet npm). En Node (pas
+// de serveur HTTP), il faut pointer explicitement setWasmPaths() vers le dossier local du paquet —
+// le comportement par défaut suppose un fetch() HTTP, adapté au navigateur mais pas à Node.
+tfWasm.setWasmPaths(path.dirname(require.resolve('@tensorflow/tfjs-backend-wasm/package.json')) + '/dist/');
 
 /**
  * RECONNAISSANCE DE PAUME — PIPELINE LOCAL (SANS API PAYANTE)
@@ -34,6 +43,16 @@ const CELL_HIST_SCALE = 1000; // chaque histogramme de cellule est renormalisé 
 const MAX_DETECTION_INPUT_SIZE = 640; // redimensionnement avant détection (vitesse), sans impact sur la précision du gabarit
 const MIN_HAND_SCORE = 0.5; // confiance minimale du détecteur de main — porte de qualité/liveness best-effort
 
+// Portes de qualité de capture (enrôlement ET paiement) — valeurs de départ prudentes, à
+// recalibrer avec de vraies photos une fois testées en conditions réelles (même esprit que
+// PALM_CV_MIN_SCORE). Objectif : rejeter une mauvaise capture avec un message actionnable plutôt
+// que de produire silencieusement un gabarit peu fiable ou un faux rejet au moment du paiement.
+const MIN_PALM_SPAN_PX = 50; // écartement paume (landmarks) trop petit = main trop loin de la caméra
+const MAX_PALM_SPAN_PX = 450; // trop grand = main trop près (probablement floue/coupée), sur une image ≤640px
+const MIN_BRIGHTNESS = 40; // moyenne des niveaux de gris (0-255), avant égalisation d'histogramme
+const MAX_BRIGHTNESS = 220;
+const MIN_SHARPNESS_VARIANCE = 15; // variance du Laplacien (0-255), avant égalisation — plus bas = plus flou
+
 const REQUIRED_LANDMARKS = ['wrist', 'index_finger_mcp', 'middle_finger_mcp', 'ring_finger_mcp', 'pinky_finger_mcp'];
 
 // LUT code LBP (0-255) -> index de bin (0-58), calculée une seule fois au chargement du module.
@@ -64,12 +83,22 @@ let detectorPromise = null;
 function getDetector() {
   if (!detectorPromise) {
     detectorPromise = (async () => {
-      await tf.setBackend('cpu');
+      await tf.setBackend('wasm');
       await tf.ready();
+      // Par défaut, @tensorflow-models/hand-pose-detection télécharge les poids du modèle depuis
+      // des serveurs Google (tfhub.dev / Kaggle) au premier démarrage — un vrai appel réseau
+      // externe, contraire au principe "sans API externe" de tout ce pipeline, et qui échoue
+      // purement et simplement si le réseau vers Google est instable/bloqué (vécu en pratique).
+      // Les poids sont donc vendorisés dans le dépôt (backend/models/handpose/) et servis par ce
+      // même serveur Express (voir app.js, route /models) — aucun accès réseau, même au tout
+      // premier démarrage, même hors ligne.
+      const base = `http://127.0.0.1:${env.port}/models/handpose`;
       return handPoseDetection.createDetector(handPoseDetection.SupportedModels.MediaPipeHands, {
         runtime: 'tfjs',
         modelType: 'lite',
         maxHands: 1,
+        detectorModelUrl: `${base}/detector/model.json`,
+        landmarkModelUrl: `${base}/landmark/model.json`,
       });
     })();
   }
@@ -124,6 +153,39 @@ function normalize(v) {
 function avgPoint(points) {
   const sum = points.reduce((acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y }), { x: 0, y: 0 });
   return { x: sum.x / points.length, y: sum.y / points.length };
+}
+
+// Écartement de la paume dans l'image source (avant recadrage), en pixels — sert de proxy pour la
+// distance main/caméra (cf. warpPalmPatch, qui recalcule les mêmes axes pour le recadrage lui-même).
+function palmSpan(hand) {
+  const palmLength = dist(hand.wrist, hand.middle_finger_mcp);
+  const palmWidth = dist(hand.index_finger_mcp, hand.pinky_finger_mcp);
+  return Math.max(palmLength, palmWidth);
+}
+
+function meanBrightness(patch) {
+  let sum = 0;
+  for (let i = 0; i < patch.length; i += 1) sum += patch[i];
+  return sum / patch.length;
+}
+
+// Variance du Laplacien (netteté) — technique classique de détection de flou : une image nette a
+// des transitions marquées (variance élevée de la réponse du filtre), une image floue les lisse.
+function laplacianVariance(patch, size) {
+  let sum = 0;
+  let sumSq = 0;
+  let count = 0;
+  for (let y = 1; y < size - 1; y += 1) {
+    for (let x = 1; x < size - 1; x += 1) {
+      const idx = y * size + x;
+      const lap = -4 * patch[idx] + patch[idx - 1] + patch[idx + 1] + patch[idx - size] + patch[idx + size];
+      sum += lap;
+      sumSq += lap * lap;
+      count += 1;
+    }
+  }
+  const mean = sum / count;
+  return sumSq / count - mean * mean;
 }
 
 function sampleBilinear(data, w, h, x, y) {
@@ -235,9 +297,11 @@ function computeLbpTemplate(patch) {
   return template;
 }
 
-// Photo (buffer JPEG/PNG/WebP) -> gabarit LBP. Lève une ApiError 422 si aucune paume n'est
-// détectée avec une confiance suffisante (porte de qualité/liveness best-effort, cf. commentaire
-// d'en-tête).
+// Photo (buffer JPEG/PNG/WebP) -> gabarit LBP. Lève une ApiError 422 avec un message actionnable
+// distinct si aucune paume n'est détectée, ou si la capture ne passe pas les portes de qualité
+// (cadrage/distance, luminosité, netteté) — mieux vaut faire reprendre la photo tout de suite
+// (l'app affiche déjà e.message et relance la capture) que produire un gabarit peu fiable, ou
+// causer un faux rejet au moment du paiement à cause d'une mauvaise capture.
 async function extractTemplate(photoBuffer) {
   const img = await Jimp.read(photoBuffer);
   if (img.bitmap.width > MAX_DETECTION_INPUT_SIZE) {
@@ -252,8 +316,30 @@ async function extractTemplate(photoBuffer) {
     );
   }
 
+  const span = palmSpan(hand);
+  if (span < MIN_PALM_SPAN_PX) {
+    throw new ApiError(422, 'Main trop éloignée de la caméra — rapprochez-la et réessayez');
+  }
+  if (span > MAX_PALM_SPAN_PX) {
+    throw new ApiError(422, 'Main trop proche de la caméra — éloignez-la légèrement et réessayez');
+  }
+
   const grey = img.clone().greyscale();
   const patch = warpPalmPatch(grey, hand);
+
+  const brightness = meanBrightness(patch);
+  if (brightness < MIN_BRIGHTNESS) {
+    throw new ApiError(422, "Photo trop sombre — améliorez l'éclairage et réessayez");
+  }
+  if (brightness > MAX_BRIGHTNESS) {
+    throw new ApiError(422, 'Photo surexposée — évitez la lumière directe et réessayez');
+  }
+
+  const sharpness = laplacianVariance(patch, PATCH_SIZE);
+  if (sharpness < MIN_SHARPNESS_VARIANCE) {
+    throw new ApiError(422, 'Photo trop floue — tenez le téléphone stable et réessayez');
+  }
+
   equalizeHistogram(patch);
   const descriptor = computeLbpTemplate(patch);
 
@@ -287,10 +373,19 @@ function deserializeTemplate(buffer) {
   return new Uint16Array(aligned.buffer, aligned.byteOffset, aligned.byteLength / 2);
 }
 
+// Charge le détecteur de main dès le démarrage du serveur plutôt qu'à la première requête réelle
+// (voir server.js) — la création du détecteur prend ~3-4s (chargement du modèle, indépendant du
+// backend CPU/WASM) ; sans ce préchauffage, le tout premier appel à /biometrie/enroll ou
+// /marchand/encaisser après un (re)démarrage paierait ce coût en plus du sien.
+function warmUp() {
+  return getDetector();
+}
+
 module.exports = {
   ALGO_VERSION: 'palm-lbp-v1',
   extractTemplate,
   matchScore,
   serializeTemplate,
   deserializeTemplate,
+  warmUp,
 };

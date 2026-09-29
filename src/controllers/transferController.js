@@ -60,8 +60,10 @@ async function transferToAfripayAccount(req, res, next) {
       libelle,
     });
 
-    // Merchants have no `langue` column yet, so their notifications stay French for now
-    // (see backend/src/i18n/index.js — client-only for this pass).
+    // Merchants have no `langue` column, so the FRENCH fallback (titre/contenu, used by the web
+    // back-office and as a last resort) stays French for them — but titreCle/contenuCle below let
+    // either app retranslate in ITS OWN current UI language at display time, merchant included
+    // (mobilepro already has a working language switcher; see notificationService.notify).
     const destLangue = destType === 'client' ? destUser.langue : undefined;
     await notificationService.notify({
       destinataireId: destUser.id,
@@ -69,6 +71,9 @@ async function transferToAfripayAccount(req, res, next) {
       type: 'transaction',
       titre: t(destLangue, 'notif.transferReceived.title'),
       contenu: t(destLangue, 'notif.transferReceived.body', { montant }),
+      titreCle: 'notif.transferReceived.title',
+      contenuCle: 'notif.transferReceived.body',
+      params: { montant },
     });
 
     ok(res, { transaction });

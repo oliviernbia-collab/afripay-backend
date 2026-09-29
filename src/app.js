@@ -21,6 +21,7 @@ const rechargeRoutes = require('./routes/rechargeRoutes');
 const transferRoutes = require('./routes/transferRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const adminRoutes = require('./routes/adminRoutes');
+const paiementWebhookRoutes = require('./routes/paiementWebhookRoutes');
 
 const app = express();
 
@@ -71,6 +72,15 @@ app.use('/uploads', (req, res, next) => {
 });
 app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
 
+// Poids du modèle de détection de main (reconnaissance de paume), vendorisés dans le dépôt et
+// servis par le backend lui-même — voir palmVisionService.js, qui pointe detectorModelUrl/
+// landmarkModelUrl vers ces routes. Évite tout appel réseau EXTERNE (le fournisseur par défaut de
+// @tensorflow-models/hand-pose-detection va chercher ces fichiers sur des serveurs Google, ce qui
+// contredit le principe "sans API externe" et échoue de toute façon sur un réseau instable). Fichiers
+// publics (poids d'un modèle ML open-source, aucune donnée utilisateur) : pas de signature requise,
+// contrairement à /uploads.
+app.use('/models', express.static(path.join(__dirname, '..', 'models')));
+
 // Exigence 9.3 : "disponibilité cible de service de 99,5% minimum" — rien n'observait cela avant.
 // Ce endpoint est ce qu'un moniteur externe (UptimeRobot, Better Stack, un cron interne...) doit
 // interroger périodiquement pour calculer ce taux ; il vérifie réellement la connexion base de
@@ -110,6 +120,7 @@ app.use('/api/recharges', rechargeRoutes);
 app.use('/api/transferts', transferRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/paiements', paiementWebhookRoutes);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

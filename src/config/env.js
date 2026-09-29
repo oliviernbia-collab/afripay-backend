@@ -92,6 +92,16 @@ module.exports = {
     // départ prudente, à recalibrer avec de vraies photos (précision/faux-positifs) une fois testé
     // en conditions réelles — pas une valeur validée scientifiquement.
     palmCvMinScore: Number(process.env.PALM_CV_MIN_SCORE || 0.55),
+    // Marge minimale entre le meilleur et le second meilleur score lors de la comparaison 1:N —
+    // évite d'accepter un match ambigu entre deux clients aux gabarits proches. Même prudence que
+    // palmCvMinScore : valeur de départ, à recalibrer avec de vraies photos.
+    palmCvMinMargin: Number(process.env.PALM_CV_MIN_MARGIN || 0.05),
+    // Anti brute-force dédié à la reconnaissance de paume par photo (distinct de security.* : ici
+    // le blocage est scopé au marchand, pas à un compte, car l'identité du client n'est justement
+    // pas encore connue avant reconnaissance — voir biometricService.recognizeByPhoto). Ne bloque
+    // que le chemin photo ; le repli QR reste disponible pendant un blocage.
+    palmMaxFailedAttempts: Number(process.env.PALM_MAX_FAILED_ATTEMPTS || 5),
+    palmLockoutMinutes: Number(process.env.PALM_LOCKOUT_MINUTES || 15),
   },
   security: {
     // Blocage automatique après échecs répétés (exigence 9.1) : au-delà de
@@ -128,5 +138,21 @@ module.exports = {
     cloudName: process.env.CLOUDINARY_CLOUD_NAME || '',
     apiKey: process.env.CLOUDINARY_API_KEY || '',
     apiSecret: process.env.CLOUDINARY_API_SECRET || '',
+  },
+  // MoneyFusion (passerelle Mobile Money réelle — encaissement/payin côté Client, retrait/payout
+  // côté Marchand) — voir services/moneyFusionService.js. Deux limites externes à connaître :
+  // le payout exige une IP fixe whitelistée côté MoneyFusion (inutilisable depuis un poste de dev
+  // local tel quel) et les deux sens dépendent de webhooks, donc d'un backend exposé publiquement
+  // (MONEYFUSION_WEBHOOK_BASE_URL doit pointer vers une URL que MoneyFusion peut réellement
+  // atteindre — un tunnel type ngrok en dev, le vrai domaine en production).
+  moneyFusion: {
+    apiKey: process.env.MONEYFUSION_API_KEY || '',
+    // URL propre au compte marchand pour initier un encaissement (payin) — "obtenue depuis le
+    // tableau de bord MoneyFusion" (doc peu précise sur l'endroit exact) ; contrairement au
+    // payout, ce n'est pas une URL fixe documentée. À renseigner une fois trouvée.
+    payinUrl: process.env.MONEYFUSION_PAYIN_URL || '',
+    payoutUrl: process.env.MONEYFUSION_PAYOUT_URL || 'https://pay.moneyfusion.net/api/v1/withdraw',
+    countryCode: process.env.MONEYFUSION_COUNTRY_CODE || 'ci',
+    webhookBaseUrl: process.env.MONEYFUSION_WEBHOOK_BASE_URL || '',
   },
 };

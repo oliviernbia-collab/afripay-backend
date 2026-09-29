@@ -68,6 +68,9 @@ async function encaisser(req, res, next) {
         type: 'transaction',
         titre: t(client.langue, 'notif.paymentRefused.title'),
         contenu: t(client.langue, 'notif.paymentRefused.body', { montant }),
+        titreCle: 'notif.paymentRefused.title',
+        contenuCle: 'notif.paymentRefused.body',
+        params: { montant },
       });
       throw new ApiError(400, 'Solde du client insuffisant pour couvrir ce montant');
     }
@@ -88,23 +91,34 @@ async function encaisser(req, res, next) {
       libelle: t(client.langue, 'tx.achatLibelle', { marchand: merchant.raison_sociale || merchant.telephone }),
     });
 
+    // Cohérent avec le repli déjà utilisé pour tx.achatLibelle ci-dessus (raison sociale, sinon
+    // téléphone) — évite d'avoir à retraduire un texte générique type "un marchand AfriPay" plus
+    // tard : {marchand} est toujours une donnée concrète, jamais une phrase pré-traduite.
+    const merchantDisplayName = merchant.raison_sociale || merchant.telephone;
     await Promise.all([
       notificationService.notify({
         destinataireId: client.id,
         typeDestinataire: 'client',
         type: 'transaction',
         titre: t(client.langue, 'notif.paymentAccepted.title'),
-        contenu: t(client.langue, 'notif.paymentAccepted.body', {
-          montant,
-          marchand: merchant.raison_sociale || 'un marchand AfriPay',
-        }),
+        contenu: t(client.langue, 'notif.paymentAccepted.body', { montant, marchand: merchantDisplayName }),
+        titreCle: 'notif.paymentAccepted.title',
+        contenuCle: 'notif.paymentAccepted.body',
+        params: { montant, marchand: merchantDisplayName },
       }),
+      // Marchands sans colonne `langue` : le titre/contenu par défaut reste français, mais
+      // titreCle/contenuCle laissent l'app Marchand (qui a déjà un sélecteur de langue) retraduire
+      // dans sa langue active — cette notification était auparavant du texte français codé en dur,
+      // jamais traduite du tout.
       notificationService.notify({
         destinataireId: merchant.id,
         typeDestinataire: 'marchand',
         type: 'transaction',
-        titre: 'Encaissement reçu',
-        contenu: `Encaissement de ${montant} FCFA validé.`,
+        titre: t(undefined, 'notif.paymentReceivedMerchant.title'),
+        contenu: t(undefined, 'notif.paymentReceivedMerchant.body', { montant }),
+        titreCle: 'notif.paymentReceivedMerchant.title',
+        contenuCle: 'notif.paymentReceivedMerchant.body',
+        params: { montant },
       }),
     ]);
 

@@ -1,9 +1,11 @@
+const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const { query } = require('../config/db');
 const ApiError = require('../utils/ApiError');
 const { generatePalmCode, encryptTemplate, decryptTemplate } = require('../utils/crypto');
 const env = require('../config/env');
 const palmVisionService = require('./palmVisionService');
+const recentPhotoCache = require('../utils/recentPhotoCache');
 
 /**
  * BIOMÉTRIE PAUME DE MAIN
@@ -54,7 +56,7 @@ async function refreshActiveCode(userId) {
   const template = await getActiveTemplate(userId);
   if (!template) return null;
 
-  const palmCode = require('crypto').randomBytes(9).toString('base64url');
+  const palmCode = crypto.randomBytes(9).toString('base64url');
   const expireA = expiryTimestamp();
   await query('UPDATE biometric_palm_templates SET palm_code = :palmCode, expire_a = :expireA WHERE id = :id', {
     id: template.id,
@@ -93,13 +95,58 @@ async function verifyByPalmCode(palmCode, { merchantId, ip } = {}) {
   return userId;
 }
 
+// Échecs de reconnaissance récents (hors rejets qualité, voir motif ci-dessous) pour CE marchand —
+// base du blocage anti brute-force. Même principe que pinService.assertNotLockedOut/
+// securityEventService.countRecentFailures, mais scopé au marchand plutôt qu'au téléphone : avant
+// reconnaissance, on ne sait justement pas encore quel compte client est visé.
+async function countRecentRecognitionFailures(merchantId, sinceMinutes) {
+  if (!merchantId) return 0;
+  const rows = await query(
+    `SELECT COUNT(*) AS total FROM biometric_scan_logs
+     WHERE merchant_id = :merchantId AND resultat = 'echec' AND motif LIKE 'reconnaissance photo:%'
+       AND date_heure >= DATE_SUB(NOW(), INTERVAL :sinceMinutes MINUTE)`,
+    { merchantId, sinceMinutes }
+  );
+  return Number(rows[0]?.total || 0);
+}
+
 // Identification 1:N (photo prise par le marchand à l'encaissement) : extrait le gabarit de la
 // photo présentée puis le compare à tous les gabarits actifs issus de la même version d'algo,
-// retient le meilleur score. Coût O(nombre de clients enrôlés) par tentative — acceptable à
-// l'échelle d'un pilote/démo, à revoir (index approximatif, pré-filtrage) avant un vrai passage
-// à l'échelle avec une base d'utilisateurs importante.
+// retient le meilleur score ET exige une marge suffisante avec le second meilleur (évite un match
+// ambigu entre deux clients aux gabarits proches). Coût O(nombre de clients enrôlés) par tentative
+// — acceptable à l'échelle d'un pilote/démo, à revoir (index approximatif, pré-filtrage) avant un
+// vrai passage à l'échelle avec une base d'utilisateurs importante.
 async function recognizeByPhoto(photoBuffer, { merchantId, ip } = {}) {
-  const { descriptor: queryDescriptor } = await palmVisionService.extractTemplate(photoBuffer);
+  // Anti-rejeu : une photo déjà soumise récemment pour ce marchand est refusée d'emblée, avant de
+  // lancer le pipeline (coûteux) — bloque le rejeu trivial d'un fichier capturé/intercepté.
+  const photoHash = crypto.createHash('sha256').update(photoBuffer).digest('hex');
+  if (merchantId && recentPhotoCache.wasRecentlyUsed(merchantId, photoHash)) {
+    throw new ApiError(429, 'Cette photo a déjà été utilisée — présentez à nouveau la paume');
+  }
+
+  // Anti brute-force : au-delà de N échecs de reconnaissance récents pour ce marchand, le chemin
+  // photo est bloqué temporairement (le repli QR, lui, reste disponible — voir verifyByPalmCode).
+  const recentFailures = await countRecentRecognitionFailures(merchantId, env.business.palmLockoutMinutes);
+  if (recentFailures >= env.business.palmMaxFailedAttempts) {
+    throw new ApiError(
+      429,
+      `Trop d'échecs de reconnaissance récents. Réessayez dans ${env.business.palmLockoutMinutes} minutes ou utilisez le QR du client.`
+    );
+  }
+
+  let queryDescriptor;
+  try {
+    ({ descriptor: queryDescriptor } = await palmVisionService.extractTemplate(photoBuffer));
+  } catch (e) {
+    // Rejet qualité (photo floue/trop sombre/mal cadrée, ou aucune main détectée) : loggé avec un
+    // préfixe distinct de 'reconnaissance photo:' pour NE PAS compter dans le blocage anti
+    // brute-force ci-dessus — un marchand dans un lieu mal éclairé ne doit pas se retrouver bloqué
+    // à cause de la qualité des photos plutôt que d'un abus réel.
+    await logAttempt({ merchantId, userId: null, resultat: 'echec', motif: `qualite photo: ${e.message}`, ip });
+    throw e;
+  }
+
+  if (merchantId) recentPhotoCache.remember(merchantId, photoHash);
 
   const rows = await query(
     `SELECT user_id, gabarit_chiffré FROM biometric_palm_templates
@@ -109,28 +156,39 @@ async function recognizeByPhoto(photoBuffer, { merchantId, ip } = {}) {
 
   let bestUserId = null;
   let bestScore = 0;
+  let secondBestScore = 0;
   for (const row of rows) {
     let candidateDescriptor;
     try {
       candidateDescriptor = palmVisionService.deserializeTemplate(
         decryptTemplate(row.gabarit_chiffré, env.security.palmTemplateEncKey)
       );
-    } catch {
-      continue; // gabarit illisible (ancienne version/clé différente) — ignoré plutôt que de faire échouer tout le scan
+    } catch (e) {
+      // Gabarit illisible avec la clé actuelle (le plus souvent : enrôlé avant que
+      // PALM_TEMPLATE_ENC_KEY soit fixée dans .env — une clé aléatoire différente était générée à
+      // chaque redémarrage). Ignoré plutôt que de faire échouer tout le scan pour les autres
+      // candidats, mais signalé ici : sans ce log, un score à 0.000 pour TOUS les candidats est
+      // indiscernable d'un vrai "personne ne correspond" — voir logAttempt plus bas.
+      console.warn(`[biometrie] gabarit illisible pour user ${row.user_id} (ré-enrôlement requis): ${e.message}`);
+      continue;
     }
     const score = palmVisionService.matchScore(queryDescriptor, candidateDescriptor);
     if (score > bestScore) {
+      secondBestScore = bestScore;
       bestScore = score;
       bestUserId = row.user_id;
+    } else if (score > secondBestScore) {
+      secondBestScore = score;
     }
   }
 
-  if (!bestUserId || bestScore < env.business.palmCvMinScore) {
+  const margin = bestScore - secondBestScore;
+  if (!bestUserId || bestScore < env.business.palmCvMinScore || margin < env.business.palmCvMinMargin) {
     await logAttempt({
       merchantId,
       userId: bestUserId,
       resultat: 'echec',
-      motif: `reconnaissance photo: score insuffisant (${bestScore.toFixed(3)})`,
+      motif: `reconnaissance photo: score insuffisant ou ambigu (score ${bestScore.toFixed(3)}, marge ${margin.toFixed(3)})`,
       ip,
     });
     throw new ApiError(404, 'Aucun client identifié pour cette présentation de paume — réessayez ou utilisez le QR');
@@ -140,7 +198,7 @@ async function recognizeByPhoto(photoBuffer, { merchantId, ip } = {}) {
     merchantId,
     userId: bestUserId,
     resultat: 'succes',
-    motif: `reconnaissance photo (score ${bestScore.toFixed(3)})`,
+    motif: `reconnaissance photo (score ${bestScore.toFixed(3)}, marge ${margin.toFixed(3)})`,
     ip,
   });
   return bestUserId;

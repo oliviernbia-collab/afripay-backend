@@ -102,13 +102,21 @@ async function resolveCounterparty(tx, walletId, viewerType) {
   if (!otherWalletId) {
     // No AfriPay wallet on the other side: either an external mobile-money transfer (the
     // recipient's number is stored on transfer_external) or a recharge (money comes from the
-    // provider, not from another AfriPay account — no counterparty to show).
+    // provider, not from another AfriPay account — no counterparty person, but the provider is
+    // still useful client-side to rebuild a translated title without relying on the frozen
+    // `libelle` — see recharge_providers, alimentée par rechargeService.rechargeWallet).
     if (tx.type === 'transfert') {
       const rows = await query(
         'SELECT numéro_destinataire, opérateur_destination FROM transfer_external WHERE transaction_id = :id LIMIT 1',
         { id: tx.id }
       );
       if (rows[0]) return { telephone: rows[0].numéro_destinataire, fournisseur: rows[0].opérateur_destination, externe: true };
+    }
+    if (tx.type === 'recharge') {
+      const rows = await query('SELECT fournisseur FROM recharge_providers WHERE transaction_id = :id LIMIT 1', {
+        id: tx.id,
+      });
+      if (rows[0]) return { fournisseur: rows[0].fournisseur };
     }
     return null;
   }
