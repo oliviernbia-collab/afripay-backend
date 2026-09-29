@@ -1,3 +1,4 @@
+const { v4: uuidv4 } = require('uuid');
 const ApiError = require('../utils/ApiError');
 const env = require('../config/env');
 
@@ -39,9 +40,35 @@ function webhookUrl(path) {
   return `${env.moneyFusion.webhookBaseUrl.replace(/\/$/, '')}${path}`;
 }
 
+// MODE SIMULATION LOCALE (env.moneyFusion.mockMode) — remplace l'appel MoneyFusion par une page
+// HTML servie par ce même backend (voir routes/devPaymentSimulationRoutes.js) où on choisit
+// soi-même le résultat à simuler (succès/échec), qui appelle ensuite EXACTEMENT le même chemin de
+// confirmation qu'un vrai webhook (rechargeService.confirmerPayin /
+// transferService.confirmerPayout) — permet de tester tout le parcours (transaction en_attente,
+// crédit/débit du wallet, notification) sans IP fixe, sans MONEYFUSION_PAYIN_URL, ni backend
+// exposé publiquement. Jamais actif en production (voir config/env.js).
+function assertSimulationReachable() {
+  if (!env.moneyFusion.webhookBaseUrl) {
+    throw new ApiError(
+      503,
+      'Mode simulation MoneyFusion actif mais MONEYFUSION_WEBHOOK_BASE_URL est vide — renseignez-y l’IP locale par laquelle votre téléphone joint déjà ce serveur (ex. http://192.168.1.150:4000, la même que dans mobileclient/mobilepro src/config/api.js).'
+    );
+  }
+}
+
+function simulationUrl(token, type) {
+  return `${env.moneyFusion.webhookBaseUrl.replace(/\/$/, '')}/dev/paiement-simulation/${token}?type=${type}`;
+}
+
 // Encaissement (payin) — le client choisit lui-même son opérateur Mobile Money sur la page de
 // paiement hébergée par MoneyFusion (`url` de la réponse) ; on ne précise pas l'opérateur ici.
 async function initierPayin({ montant, telephone, nomClient, referenceInterne }) {
+  if (env.moneyFusion.mockMode) {
+    assertSimulationReachable();
+    const token = `mock-payin-${uuidv4()}`;
+    return { token, paymentUrl: simulationUrl(token, 'payin') };
+  }
+
   assertConfigured();
   if (!env.moneyFusion.payinUrl) {
     throw new ApiError(
@@ -80,10 +107,18 @@ const WITHDRAW_MODE_BY_OPERATEUR = {
 
 // Retrait (payout) — nécessite une IP fixe whitelistée côté MoneyFusion, voir commentaire d'en-tête.
 async function initierPayout({ montant, telephone, opérateur }) {
-  assertConfigured();
   const withdrawMode = WITHDRAW_MODE_BY_OPERATEUR[opérateur];
   if (!withdrawMode) throw new ApiError(400, `Opérateur de retrait non pris en charge par MoneyFusion: ${opérateur}`);
 
+  if (env.moneyFusion.mockMode) {
+    assertSimulationReachable();
+    const tokenPay = `mock-payout-${uuidv4()}`;
+    // Le retrait n'ouvre pas de page côté marchand (l'app affiche juste "en cours") — la page de
+    // simulation est quand même accessible manuellement pour tester la confirmation, voir README.
+    return { tokenPay, simulationUrl: simulationUrl(tokenPay, 'payout') };
+  }
+
+  assertConfigured();
   const res = await fetch(env.moneyFusion.payoutUrl, {
     method: 'POST',
     headers: {

@@ -86,11 +86,17 @@ async function externalTransfer({ merchant, opérateurDestination, numéroDestin
 
   let tokenPay;
   try {
-    ({ tokenPay } = await moneyFusionService.initierPayout({
+    let simulationUrl;
+    ({ tokenPay, simulationUrl } = await moneyFusionService.initierPayout({
       montant: amount,
       telephone: numéroDestinataire,
       opérateur: opérateurDestination,
     }));
+    // Mode simulation locale (voir moneyFusionService.js) : l'app Marchand n'affiche pas de lien à
+    // ouvrir pour ce flux (contrairement à la recharge) — le lien est donc juste loggé ici pour
+    // celui qui fait tourner le serveur en dev, à ouvrir soi-même dans un navigateur pour simuler
+    // la confirmation.
+    if (simulationUrl) console.log(`[moneyfusion:mock] simuler la confirmation du retrait ${transaction.id} -> ${simulationUrl}`);
   } catch (e) {
     // L'initiation elle-même a échoué (pas juste "en attente de confirmation") : rembourser tout
     // de suite plutôt que de laisser le marchand avec un wallet débité pour rien.

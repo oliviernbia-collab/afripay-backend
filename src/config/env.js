@@ -153,6 +153,15 @@ module.exports = {
     payinUrl: process.env.MONEYFUSION_PAYIN_URL || '',
     payoutUrl: process.env.MONEYFUSION_PAYOUT_URL || 'https://pay.moneyfusion.net/api/v1/withdraw',
     countryCode: process.env.MONEYFUSION_COUNTRY_CODE || 'ci',
+    // Base URL par laquelle CE serveur est joignable — sert à la fois à construire webhook_url
+    // (MoneyFusion doit pouvoir nous appeler) et, en mode simulation ci-dessous, les liens vers la
+    // page de simulation locale (le téléphone doit pouvoir l'ouvrir : IP locale type
+    // http://192.168.x.x:4000, la même que mobileclient/mobilepro utilisent déjà pour l'API).
     webhookBaseUrl: process.env.MONEYFUSION_WEBHOOK_BASE_URL || '',
+    // Bascule payin/payout sur un simulateur local (voir routes/devPaymentSimulationRoutes.js) au
+    // lieu de vrais appels MoneyFusion — permet de tester tout le parcours (recharge, retrait,
+    // webhooks, notifications, crédit/débit du wallet) sans IP fixe ni backend exposé publiquement.
+    // Verrouillé à false en production quelle que soit la valeur de la variable d'environnement.
+    mockMode: (process.env.MONEYFUSION_MOCK_MODE || 'false') === 'true' && nodeEnv !== 'production',
   },
 };

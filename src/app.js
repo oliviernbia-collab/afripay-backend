@@ -22,6 +22,7 @@ const transferRoutes = require('./routes/transferRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const paiementWebhookRoutes = require('./routes/paiementWebhookRoutes');
+const devPaymentSimulationRoutes = require('./routes/devPaymentSimulationRoutes');
 
 const app = express();
 
@@ -121,6 +122,9 @@ app.use('/api/transferts', transferRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/paiements', paiementWebhookRoutes);
+// Hors de /api (le téléphone ouvre ces pages dans son navigateur, pas via le client API) — voir
+// devPaymentSimulationController.js, verrouillé derrière env.moneyFusion.mockMode.
+app.use('/dev', devPaymentSimulationRoutes);
 
 app.use(notFoundHandler);
 app.use(errorHandler);
