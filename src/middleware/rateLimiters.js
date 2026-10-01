@@ -32,4 +32,14 @@ const otpConsumeLimiter = rateLimit({
   message: { success: false, message: 'Trop de tentatives. Réessayez plus tard.' },
 });
 
-module.exports = { loginLimiter, otpLimiter, otpConsumeLimiter };
+// Formulaire de contact public (sans authentification) : cible facile pour du spam/flood si on ne
+// le limite pas, contrairement aux autres endpoints publics de lecture seule de l'API.
+const contactLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Trop de messages envoyés. Réessayez plus tard.' },
+});
+
+module.exports = { loginLimiter, otpLimiter, otpConsumeLimiter, contactLimiter };

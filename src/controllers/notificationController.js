@@ -8,6 +8,8 @@ async function list(req, res, next) {
     const items = await notificationService.listForUser(req.auth.id, typeFor(req.auth.type), {
       limit: req.query.limit ? Number(req.query.limit) : 50,
       offset: req.query.offset ? Number(req.query.offset) : 0,
+      dateDebut: req.query.dateDebut,
+      dateFin: req.query.dateFin,
     });
     ok(res, items);
   } catch (e) {

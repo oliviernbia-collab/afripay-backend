@@ -134,6 +134,22 @@ module.exports = {
     // seule fois à la création — jamais de mot de passe réel committé dans le dépôt.
     password: process.env.ADMIN_SEED_PASSWORD || '',
   },
+  // SMTP (envoi d'e-mail réel) — utilisé pour notifier automatiquement l'auteur d'un message de
+  // contact quand un admin y répond (voir services/emailService.js). Comme OTP_DEV_ECHO ci-dessus,
+  // l'absence de configuration ne fait pas échouer l'action admin : l'e-mail est simplement loggé
+  // en console (dev) plutôt qu'envoyé, pour ne pas bloquer un test local sans compte SMTP.
+  email: {
+    host: process.env.SMTP_HOST || '',
+    port: Number(process.env.SMTP_PORT || 587),
+    // true pour le port 465 (SSL implicite) ; false pour 587/25 (STARTTLS, nodemailer le négocie).
+    secure: (process.env.SMTP_SECURE || 'false') === 'true',
+    user: process.env.SMTP_USER || '',
+    password: process.env.SMTP_PASSWORD || '',
+    from: process.env.SMTP_FROM || 'AfriPay <no-reply@afripay.local>',
+    get configured() {
+      return Boolean(this.host && this.user && this.password);
+    },
+  },
   cloudinary: {
     cloudName: process.env.CLOUDINARY_CLOUD_NAME || '',
     apiKey: process.env.CLOUDINARY_API_KEY || '',

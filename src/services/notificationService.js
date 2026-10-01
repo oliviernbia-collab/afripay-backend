@@ -1,5 +1,6 @@
 const { v4: uuidv4 } = require('uuid');
 const { query } = require('../config/db');
+const { normalizeDateRange } = require('../utils/dateRange');
 
 // `titre`/`contenu` : rendu français par défaut, pour le back-office web (outil interne, une
 // seule langue) et comme repli mobile si aucune clé n'est fournie (message admin composé
@@ -49,11 +50,22 @@ async function notifyMany(destinataireIds, typeDestinataire, type, titre, conten
   return total;
 }
 
-async function listForUser(destinataireId, typeDestinataire, { limit = 50, offset = 0 } = {}) {
+async function listForUser(destinataireId, typeDestinataire, { limit = 50, offset = 0, dateDebut, dateFin } = {}) {
+  const { dateDebut: debut, dateFin: fin } = normalizeDateRange({ dateDebut, dateFin });
+  const conditions = ['destinataire_id = :destinataireId', 'type_destinataire = :typeDestinataire'];
+  const params = { destinataireId, typeDestinataire, limit, offset };
+  if (debut) {
+    conditions.push('date_creation >= :dateDebut');
+    params.dateDebut = debut;
+  }
+  if (fin) {
+    conditions.push('date_creation <= :dateFin');
+    params.dateFin = fin;
+  }
   return query(
-    `SELECT * FROM notifications WHERE destinataire_id = :destinataireId AND type_destinataire = :typeDestinataire
+    `SELECT * FROM notifications WHERE ${conditions.join(' AND ')}
      ORDER BY date_creation DESC LIMIT :limit OFFSET :offset`,
-    { destinataireId, typeDestinataire, limit, offset }
+    params
   );
 }
 

@@ -9,6 +9,7 @@ const userService = require('../services/userService');
 const merchantService = require('../services/merchantService');
 const kycService = require('../services/kycService');
 const notificationService = require('../services/notificationService');
+const annonceService = require('../services/annonceService');
 const auditService = require('../services/auditService');
 const securityEventService = require('../services/securityEventService');
 const pinService = require('../services/pinService');
@@ -591,21 +592,29 @@ async function listNotifications(req, res, next) {
 async function sendNotification(req, res, next) {
   try {
     const { destinataireId, typeDestinataire, type, titre, contenu, tous } = req.body;
-    if (!['client', 'marchand'].includes(typeDestinataire) || !titre || !contenu) {
-      throw new ApiError(400, 'typeDestinataire (client|marchand), titre et contenu sont requis');
+    // 'tous' (diffusion aux DEUX populations à la fois) n'a de sens que pour une diffusion
+    // générale (tous:true) — un destinataire précis reste forcément soit client, soit marchand.
+    const typesDestinataireValides = tous ? ['client', 'marchand', 'tous'] : ['client', 'marchand'];
+    if (!typesDestinataireValides.includes(typeDestinataire) || !titre || !contenu) {
+      throw new ApiError(400, 'typeDestinataire (client|marchand' + (tous ? '|tous' : '') + '), titre et contenu sont requis');
     }
     const notifType = ['transaction', 'sécurité', 'système'].includes(type) ? type : 'système';
 
     if (tous) {
-      const ids =
-        typeDestinataire === 'client' ? await userService.listAllIds() : await merchantService.listAllIds();
-      const nombreDestinataires = await notificationService.notifyMany(
-        ids,
-        typeDestinataire,
-        notifType,
-        titre,
-        contenu
-      );
+      let nombreDestinataires = 0;
+      if (typeDestinataire === 'client' || typeDestinataire === 'tous') {
+        const ids = await userService.listAllIds();
+        nombreDestinataires += await notificationService.notifyMany(ids, 'client', notifType, titre, contenu);
+      }
+      if (typeDestinataire === 'marchand' || typeDestinataire === 'tous') {
+        const ids = await merchantService.listAllIds();
+        nombreDestinataires += await notificationService.notifyMany(ids, 'marchand', notifType, titre, contenu);
+      }
+
+      // Une diffusion générale (à TOUS les clients ou TOUS les marchands) remplace aussi la
+      // bannière de la page d'accueil publique — voir annonceService.js : pas de formulaire
+      // séparé, la bannière reflète simplement la dernière diffusion de ce type.
+      await annonceService.replaceActive({ message: `${titre} — ${contenu}`, adminId: req.auth.id });
 
       await auditService.log({
         adminId: req.auth.id,

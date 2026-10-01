@@ -1,5 +1,7 @@
 const express = require('express');
 const adminController = require('../controllers/adminController');
+const annonceController = require('../controllers/annonceController');
+const contactMessageController = require('../controllers/contactMessageController');
 const { authenticate, requireType, requireRole } = require('../middleware/auth');
 const { uploadPhoto } = require('../middleware/upload');
 const { loginLimiter } = require('../middleware/rateLimiters');
@@ -46,6 +48,10 @@ router.get('/fraude', ...auditReaders, adminController.fraudeOverview);
 
 router.get('/notifications', ...adminOnly, adminController.listNotifications);
 router.post('/notifications', ...adminOnly, adminController.sendNotification);
+router.post('/annonces/arreter', ...adminOnly, annonceController.stop);
+
+router.get('/messages', ...adminOnly, contactMessageController.list);
+router.post('/messages/:id/repondre', ...adminOnly, contactMessageController.reply);
 
 router.get('/internes', ...superAdminOnly, adminController.listInternalUsers);
 router.post('/internes', ...superAdminOnly, adminController.createInternalUser);
