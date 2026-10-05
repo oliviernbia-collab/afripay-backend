@@ -34,6 +34,16 @@ async function updateKycStatus(userId, statut) {
   await query('UPDATE users SET statut_kyc = :statut WHERE id = :userId', { userId, statut });
 }
 
+// Gel de compte (ex. signalement perte/vol du téléphone) : distinct du statut KYC, voir
+// commentaire sur users.compte_bloque dans schema.sql. `motif` est effacé à la levée du blocage.
+async function setAccountLock(userId, bloque, motif) {
+  await query(
+    `UPDATE users SET compte_bloque = :bloque, motif_blocage = :motif,
+            date_blocage = :dateBlocage WHERE id = :userId`,
+    { userId, bloque: bloque ? 1 : 0, motif: bloque ? motif || null : null, dateBlocage: bloque ? new Date() : null }
+  );
+}
+
 async function updateProfile(userId, fields) {
   const allowed = ['nom', 'prenom', 'email', 'adresse', 'date_naissance', 'photo_url', 'langue'];
   const sets = [];
@@ -67,6 +77,7 @@ module.exports = {
   setPin,
   setPassword,
   updateKycStatus,
+  setAccountLock,
   updateProfile,
   listAllIds,
   toPublic,

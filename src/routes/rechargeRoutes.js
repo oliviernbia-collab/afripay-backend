@@ -5,6 +5,7 @@ const { authenticate, requireType } = require('../middleware/auth');
 const router = express.Router();
 
 router.get('/fournisseurs', rechargeController.providers);
+router.get('/frais', authenticate, requireType('client'), rechargeController.frais);
 router.post('/', authenticate, requireType('client'), rechargeController.recharge);
 router.get('/mes-recharges', authenticate, requireType('client'), rechargeController.myRecharges);
 

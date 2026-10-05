@@ -4,24 +4,25 @@ const walletService = require('./walletService');
 const transactionService = require('./transactionService');
 const kycService = require('./kycService');
 const paymentMethodService = require('./paymentMethodService');
-const moneyFusionService = require('./moneyFusionService');
+const jekoService = require('./jekoService');
 const notificationService = require('./notificationService');
 const userService = require('./userService');
+const { calculerFrais } = require('../utils/amount');
+const env = require('../config/env');
 const { t } = require('../i18n');
 
 const VALID_PROVIDERS = ['wave', 'orange_money', 'moov_money', 'mtn_money', 'djamo', 'visa'];
 
 /**
- * ENCAISSEMENT MOBILE MONEY RÉEL (payin MoneyFusion) — section 3.4 du cahier des charges.
+ * ENCAISSEMENT MOBILE MONEY RÉEL (payin Jèko) — section 3.4 du cahier des charges.
  * ---------------------------------------------------------------------
  * Remplace l'ancien mock (qui créditait le wallet instantanément) par un vrai appel à
- * moneyFusionService.initierPayin : la transaction est créée `en_attente`, le wallet n'est
- * crédité que lorsque le webhook `payin.session.completed` confirme le paiement (voir
- * controllers/paiementWebhookController.js) — MoneyFusion ne débite jamais le client
- * instantanément, il redirige vers une page de paiement hébergée (`paymentUrl` ci-dessous) où le
- * client choisit lui-même son opérateur Mobile Money.
- * `fournisseur` reste purement informatif ici (bouton choisi côté app, utilisé pour le libellé) :
- * MoneyFusion ne nous demande pas de le préciser pour le payin.
+ * jekoService.initierPayin : la transaction est créée `en_attente`, le wallet n'est crédité que
+ * lorsque le webhook `TRANSACTION_COMPLETED` confirme le paiement (voir
+ * controllers/paiementWebhookController.js) — Jèko ne débite jamais le client instantanément, il
+ * redirige vers une page de paiement hébergée (`paymentUrl` ci-dessous).
+ * `fournisseur` (opérateur déjà choisi côté app) est transmis tel quel à Jèko, qui exige un
+ * paymentMethod précis — voir jekoService.PAYMENT_METHOD_BY_FOURNISSEUR.
  * ---------------------------------------------------------------------
  */
 async function rechargeWallet({ user, fournisseur, montant, moyenPaiementId }) {
@@ -42,20 +43,25 @@ async function rechargeWallet({ user, fournisseur, montant, moyenPaiementId }) {
 
   const wallet = await walletService.getWalletByOwner(user.id, 'client');
 
+  // Le client paie le plein `montant` via Jèko (voir initierPayin plus bas, inchangé) ; AfriPay
+  // retient `frais` (2,5%) sur ce qui est réellement crédité au wallet à la confirmation
+  // (confirmerPayin ci-dessous) — voir réponse à la question posée : frais déduit du montant.
+  const frais = calculerFrais(montant, env.business.fraisRechargeTaux);
+
   const transaction = await transactionService.recordTransaction({
     type: 'recharge',
     walletSourceId: null,
     walletDestinationId: wallet.id,
     montant,
+    frais,
     statut: 'en_attente',
     méthode: fournisseur === 'visa' ? 'carte_visa' : 'mobile_money',
     libelle: t(user.langue, 'tx.rechargeLibelle', { provider: t(user.langue, `providers.${fournisseur}`) }),
   });
 
-  const { token, paymentUrl } = await moneyFusionService.initierPayin({
+  const { token, paymentUrl } = await jekoService.initierPayin({
     montant,
-    telephone: user.telephone,
-    nomClient: `${user.prenom || ''} ${user.nom || ''}`.trim() || user.telephone,
+    fournisseur,
     referenceInterne: transaction.reference,
   });
 
@@ -75,19 +81,24 @@ async function rechargeWallet({ user, fournisseur, montant, moyenPaiementId }) {
   );
 
   // Le wallet n'est PAS crédité ici — voir confirmerPayin ci-dessous, seul endroit qui crédite,
-  // une fois le paiement réellement confirmé par MoneyFusion (webhook).
+  // une fois le paiement réellement confirmé par Jèko (webhook).
   return { transaction, wallet, paymentUrl };
 }
 
-// Appelé par le webhook MoneyFusion (voir controllers/paiementWebhookController.js) — jamais par
-// une app mobile. `token` = référence renvoyée par initierPayin, retrouvée dans
-// recharge_providers.référence_externe. Ne fait rien (silencieusement) si aucune recharge
-// `en_attente` ne correspond : soit déjà traitée (le webhook peut être renvoyé plusieurs fois par
-// MoneyFusion, voir leur recommandation de dédupliquer via ce token), soit un token qu'on n'a
-// jamais émis — dans les deux cas, pas d'erreur à faire remonter.
+// Appelé par le webhook Jèko (voir controllers/paiementWebhookController.js) — jamais par une app
+// mobile. `token` = référence AfriPay (transaction.reference) renvoyée telle quelle par
+// jekoService.initierPayin, retrouvée dans recharge_providers.référence_externe. Ne fait rien
+// (silencieusement) si aucune recharge `en_attente` ne correspond : soit déjà traitée (un webhook
+// peut être renvoyé plusieurs fois), soit un token qu'on n'a jamais émis — dans les deux cas, pas
+// d'erreur à faire remonter.
 async function confirmerPayin(token, { réussi }) {
+  // JOIN sur transactions pour récupérer `frais` (calculé à l'initiation dans rechargeWallet,
+  // voir plus haut) — recharge_providers ne stocke que le montant brut demandé.
   const rows = await query(
-    "SELECT * FROM recharge_providers WHERE référence_externe = :token AND statut = 'en_attente' LIMIT 1",
+    `SELECT rp.*, t.frais AS frais
+     FROM recharge_providers rp
+     LEFT JOIN transactions t ON t.id = rp.transaction_id
+     WHERE rp.référence_externe = :token AND rp.statut = 'en_attente' LIMIT 1`,
     { token }
   );
   const recharge = rows[0];
@@ -101,8 +112,11 @@ async function confirmerPayin(token, { réussi }) {
   if (réussi) {
     // recharge_providers ne stocke pas le wallet_id (seulement user_id) — le retrouver via le
     // wallet Client, comme partout ailleurs dans le projet (walletService.getWalletByOwner).
+    // Crédité : montant demandé moins le frais AfriPay (2,5%, déjà retenu par Jèko côté payin —
+    // le client, lui, a payé le plein montant via son opérateur Mobile Money).
     const wallet = await walletService.getWalletByOwner(recharge.user_id, 'client');
-    await walletService.creditWallet(wallet.id, recharge.montant);
+    const montantNet = Number(recharge.montant) - Number(recharge.frais || 0);
+    await walletService.creditWallet(wallet.id, montantNet);
   }
 
   // L'app promet "vous serez notifié dès la confirmation" (écran Recharge) — ce webhook est le

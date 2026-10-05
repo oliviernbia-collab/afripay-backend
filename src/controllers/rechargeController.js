@@ -63,4 +63,15 @@ async function providers(req, res, next) {
   ok(res, rechargeService.VALID_PROVIDERS);
 }
 
-module.exports = { recharge, myRecharges, providers, listPaymentMethods, addPaymentMethod, removePaymentMethod };
+// Taux de frais AfriPay sur la recharge (voir rechargeService.rechargeWallet) — permet à l'app
+// de calculer et d'afficher un aperçu ("vous recevrez X") avant confirmation, sans dupliquer la
+// valeur en dur côté client.
+async function frais(req, res, next) {
+  try {
+    ok(res, { taux: env.business.fraisRechargeTaux });
+  } catch (e) {
+    next(e);
+  }
+}
+
+module.exports = { recharge, myRecharges, providers, frais, listPaymentMethods, addPaymentMethod, removePaymentMethod };

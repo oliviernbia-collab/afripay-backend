@@ -3,27 +3,26 @@ const rechargeService = require('../services/rechargeService');
 const transferService = require('../services/transferService');
 
 /**
- * SIMULATEUR LOCAL MONEYFUSION (dev uniquement) — voir services/moneyFusionService.js pour le
- * contexte complet. Remplace la vraie page de paiement MoneyFusion / le vrai webhook par une page
- * HTML minimale servie ici même : on choisit soi-même le résultat, ce qui appelle ENSUITE
- * exactement le même chemin de confirmation qu'un vrai webhook (rechargeService.confirmerPayin /
- * transferService.confirmerPayout) — permet de tester tout le parcours (transaction en_attente,
- * crédit/débit du wallet, notification) sans dépendre d'aucun des deux prérequis externes
- * (MONEYFUSION_PAYIN_URL, IP fixe pour le payout, backend exposé publiquement).
+ * SIMULATEUR LOCAL JÈKO (dev uniquement) — voir services/jekoService.js pour le contexte complet.
+ * Remplace la vraie page de paiement Jèko / le vrai webhook par une page HTML minimale servie ici
+ * même : on choisit soi-même le résultat, ce qui appelle ENSUITE exactement le même chemin de
+ * confirmation qu'un vrai webhook (rechargeService.confirmerPayin / transferService.confirmerPayout)
+ * — permet de tester tout le parcours (transaction en_attente, crédit/débit du wallet, notification)
+ * sans dépendre d'aucun des prérequis externes (clés API Jèko, backend exposé publiquement).
  *
- * Verrouillé derrière env.moneyFusion.mockMode (lui-même verrouillé à false en production, voir
+ * Verrouillé derrière env.jeko.mockMode (lui-même verrouillé à false en production, voir
  * config/env.js) — 404 sinon, y compris avec un token valide.
  */
 
 function page(req, res) {
-  if (!env.moneyFusion.mockMode) return res.status(404).send('Not found');
+  if (!env.jeko.mockMode) return res.status(404).send('Not found');
   const { token } = req.params;
   const type = req.query.type === 'payout' ? 'payout' : 'payin';
   const label = type === 'payout' ? 'retrait' : 'recharge';
 
   res.set('Content-Type', 'text/html; charset=utf-8').send(`<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Simulation MoneyFusion (dev)</title>
+<title>Simulation Jèko (dev)</title>
 <style>
   body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;padding:24px;background:#0B0B0F;color:#fff;max-width:480px;margin:0 auto}
   p{color:#B9B9C2;line-height:1.5}
@@ -34,16 +33,16 @@ function page(req, res) {
 </style></head>
 <body>
   <h2>Simulation de ${label} (mode dev local)</h2>
-  <p>Cette page remplace la vraie page MoneyFusion tant que l'intégration réelle n'est pas
-  testable en local (<code>MONEYFUSION_MOCK_MODE=true</code>). Choisissez le résultat à simuler —
-  ça déclenchera exactement le même traitement qu'un vrai webhook MoneyFusion.</p>
+  <p>Cette page remplace la vraie page Jèko tant que l'intégration réelle n'est pas testable en
+  local (<code>JEKO_MOCK_MODE=true</code>). Choisissez le résultat à simuler — ça déclenchera
+  exactement le même traitement qu'un vrai webhook Jèko.</p>
   <a class="ok" href="/dev/paiement-simulation/${token}/confirmer?type=${type}&reussi=1">✅ Simuler un ${label} réussi</a>
   <a class="ko" href="/dev/paiement-simulation/${token}/confirmer?type=${type}&reussi=0">❌ Simuler un échec</a>
 </body></html>`);
 }
 
 async function confirmer(req, res) {
-  if (!env.moneyFusion.mockMode) return res.status(404).send('Not found');
+  if (!env.jeko.mockMode) return res.status(404).send('Not found');
   const { token } = req.params;
   const type = req.query.type === 'payout' ? 'payout' : 'payin';
   const réussi = req.query.reussi === '1';
@@ -60,7 +59,7 @@ async function confirmer(req, res) {
     : '❌ Simulé : échoué';
   const detail = !traité
     ? 'Aucune transaction en_attente ne correspond à ce token (déjà traitée, ou token inconnu).'
-    : 'Vérifiez le solde et les notifications dans l’app — la transaction a été mise à jour comme un vrai webhook MoneyFusion l’aurait fait.';
+    : 'Vérifiez le solde et les notifications dans l’app — la transaction a été mise à jour comme un vrai webhook Jèko l’aurait fait.';
 
   res.set('Content-Type', 'text/html; charset=utf-8').send(`<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">

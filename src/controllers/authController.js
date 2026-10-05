@@ -184,6 +184,10 @@ async function clientRequestResetOtp(req, res, next) {
 
     const user = await userService.findByPhone(telephone);
     if (!user) throw new ApiError(404, 'Aucun compte trouvé avec ce numéro');
+    // Un compte gelé ne doit pas pouvoir être récupéré en self-service par OTP : le numéro
+    // (et donc l'OTP par SMS) peut être entre les mains du voleur si le téléphone est perdu/volé
+    // avec sa carte SIM — seul un admin peut lever le blocage après revérification d'identité.
+    if (user.compte_bloque) throw new ApiError(403, 'Compte bloqué. Contactez le support AfriPay pour le débloquer.');
 
     const result = await otpService.generateOtp(telephone, objet);
     ok(res, { sent: true, devCode: result.devCode });
@@ -202,6 +206,7 @@ async function clientResetPin(req, res, next) {
 
     const user = await userService.findByPhone(telephone);
     if (!user) throw new ApiError(404, 'Aucun compte trouvé avec ce numéro');
+    if (user.compte_bloque) throw new ApiError(403, 'Compte bloqué. Contactez le support AfriPay pour le débloquer.');
 
     await otpService.verifyOtp(telephone, otp, RESET_OBJET.pin);
 
@@ -235,6 +240,7 @@ async function clientResetPassword(req, res, next) {
 
     const user = await userService.findByPhone(telephone);
     if (!user) throw new ApiError(404, 'Aucun compte trouvé avec ce numéro');
+    if (user.compte_bloque) throw new ApiError(403, 'Compte bloqué. Contactez le support AfriPay pour le débloquer.');
 
     await otpService.verifyOtp(telephone, otp, RESET_OBJET.password);
 
@@ -288,6 +294,22 @@ async function clientLogin(req, res, next) {
         ip: req.ip,
       });
       throw new ApiError(401, 'Identifiants invalides');
+    }
+
+    // Compte gelé (ex. signalement perte/vol) : rejeté après vérification du mot de passe, pour ne
+    // pas révéler l'état du compte à quelqu'un qui n'a pas les identifiants. Seul un admin habilité
+    // peut lever le blocage (voir adminController.unblockUser) après avoir revérifié l'identité.
+    if (user.compte_bloque) {
+      await securityEventService.log({
+        acteurType: 'client',
+        acteurId: user.id,
+        telephone,
+        evenement: 'connexion',
+        resultat: 'echec',
+        détails: 'compte_bloque',
+        ip: req.ip,
+      });
+      throw new ApiError(403, 'Compte bloqué. Contactez le support AfriPay pour le débloquer.');
     }
 
     await securityEventService.log({
@@ -414,6 +436,19 @@ async function merchantLogin(req, res, next) {
       throw new ApiError(401, 'Identifiants invalides');
     }
 
+    if (merchant.compte_bloque) {
+      await securityEventService.log({
+        acteurType: 'marchand',
+        acteurId: merchant.id,
+        telephone,
+        evenement: 'connexion',
+        resultat: 'echec',
+        détails: 'compte_bloque',
+        ip: req.ip,
+      });
+      throw new ApiError(403, 'Compte bloqué. Contactez le support AfriPay pour le débloquer.');
+    }
+
     await securityEventService.log({
       acteurType: 'marchand',
       acteurId: merchant.id,
@@ -454,6 +489,7 @@ async function merchantRequestResetOtp(req, res, next) {
 
     const merchant = await merchantService.findByPhone(telephone);
     if (!merchant) throw new ApiError(404, 'Aucun compte trouvé avec ce numéro');
+    if (merchant.compte_bloque) throw new ApiError(403, 'Compte bloqué. Contactez le support AfriPay pour le débloquer.');
 
     const result = await otpService.generateOtp(telephone, objet);
     ok(res, { sent: true, devCode: result.devCode });
@@ -471,6 +507,7 @@ async function merchantResetPin(req, res, next) {
 
     const merchant = await merchantService.findByPhone(telephone);
     if (!merchant) throw new ApiError(404, 'Aucun compte trouvé avec ce numéro');
+    if (merchant.compte_bloque) throw new ApiError(403, 'Compte bloqué. Contactez le support AfriPay pour le débloquer.');
 
     await otpService.verifyOtp(telephone, otp, RESET_OBJET_MARCHAND.pin);
 
@@ -502,6 +539,7 @@ async function merchantResetPassword(req, res, next) {
 
     const merchant = await merchantService.findByPhone(telephone);
     if (!merchant) throw new ApiError(404, 'Aucun compte trouvé avec ce numéro');
+    if (merchant.compte_bloque) throw new ApiError(403, 'Compte bloqué. Contactez le support AfriPay pour le débloquer.');
 
     await otpService.verifyOtp(telephone, otp, RESET_OBJET_MARCHAND.password);
 

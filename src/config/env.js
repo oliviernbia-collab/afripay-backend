@@ -83,6 +83,12 @@ module.exports = {
     // Plafond de sécurité par opération (recharge/transfert/achat), indépendant des règles
     // métier KYC — empêche qu'un montant non borné (ex. "1e400") ne crée un solde arbitraire.
     maxTransactionFcfa: Number(process.env.MAX_TRANSACTION_FCFA || 5000000),
+    // Frais AfriPay retenus sur les flux Mobile Money réels (Jèko prend 1,5% de son côté, indépendant
+    // de ceci) : 2,5% à la recharge Client et 2,5% au retrait Marchand, déduits du montant demandé
+    // (voir utils/amount.calculerFrais). Le paiement (achat) Client<->Marchand et le transfert
+    // compte à compte interne restent gratuits — aucun frais n'y est calculé.
+    fraisRechargeTaux: Number(process.env.FRAIS_RECHARGE_TAUX ?? 0.025),
+    fraisRetraitMarchandTaux: Number(process.env.FRAIS_RETRAIT_MARCHAND_TAUX ?? 0.025),
     // Durée de validité du code de présentation "palm_code" (repli QR quand la reconnaissance
     // caméra échoue/est indisponible) avant qu'il ne doive être régénéré — limite la fenêtre de
     // rejeu si le QR affiché est capturé.
@@ -155,29 +161,30 @@ module.exports = {
     apiKey: process.env.CLOUDINARY_API_KEY || '',
     apiSecret: process.env.CLOUDINARY_API_SECRET || '',
   },
-  // MoneyFusion (passerelle Mobile Money réelle — encaissement/payin côté Client, retrait/payout
-  // côté Marchand) — voir services/moneyFusionService.js. Deux limites externes à connaître :
-  // le payout exige une IP fixe whitelistée côté MoneyFusion (inutilisable depuis un poste de dev
-  // local tel quel) et les deux sens dépendent de webhooks, donc d'un backend exposé publiquement
-  // (MONEYFUSION_WEBHOOK_BASE_URL doit pointer vers une URL que MoneyFusion peut réellement
-  // atteindre — un tunnel type ngrok en dev, le vrai domaine en production).
-  moneyFusion: {
-    apiKey: process.env.MONEYFUSION_API_KEY || '',
-    // URL propre au compte marchand pour initier un encaissement (payin) — "obtenue depuis le
-    // tableau de bord MoneyFusion" (doc peu précise sur l'endroit exact) ; contrairement au
-    // payout, ce n'est pas une URL fixe documentée. À renseigner une fois trouvée.
-    payinUrl: process.env.MONEYFUSION_PAYIN_URL || '',
-    payoutUrl: process.env.MONEYFUSION_PAYOUT_URL || 'https://pay.moneyfusion.net/api/v1/withdraw',
-    countryCode: process.env.MONEYFUSION_COUNTRY_CODE || 'ci',
-    // Base URL par laquelle CE serveur est joignable — sert à la fois à construire webhook_url
-    // (MoneyFusion doit pouvoir nous appeler) et, en mode simulation ci-dessous, les liens vers la
-    // page de simulation locale (le téléphone doit pouvoir l'ouvrir : IP locale type
+  // Jèko (passerelle Mobile Money réelle — encaissement/payin côté Client, retrait/payout côté
+  // Marchand) — voir services/jekoService.js. Les deux sens dépendent de webhooks, donc d'un
+  // backend exposé publiquement (JEKO_PUBLIC_BASE_URL doit pointer vers une URL que Jèko peut
+  // réellement atteindre — un tunnel type ngrok en dev, le vrai domaine en production), et le payin
+  // exige en plus des URLs de retour HTTPS valides (construites à partir de la même variable).
+  jeko: {
+    apiBaseUrl: process.env.JEKO_API_BASE_URL || 'https://api.jeko.africa',
+    apiKey: process.env.JEKO_API_KEY || '',
+    apiKeyId: process.env.JEKO_API_KEY_ID || '',
+    storeId: process.env.JEKO_STORE_ID || '',
+    // Secret webhook (Dashboard Jèko) utilisé pour vérifier la signature HMAC-SHA256 de l'en-tête
+    // `Jeko-Signature` — voir jekoService.verifyWebhookSignature. Sans lui, tout webhook entrant
+    // est rejeté (401) : Jèko signe ses webhooks, et ne pas vérifier cette signature laisserait
+    // n'importe qui déclencher un faux crédit de wallet avec un simple POST non authentifié.
+    webhookSecret: process.env.JEKO_WEBHOOK_SECRET || '',
+    // Base URL par laquelle CE serveur est joignable — sert à construire les URLs de retour
+    // (successUrl/errorUrl, exigées par Jèko pour le payin) et, en mode simulation ci-dessous, les
+    // liens vers la page de simulation locale (le téléphone doit pouvoir l'ouvrir : IP locale type
     // http://192.168.x.x:4000, la même que mobileclient/mobilepro utilisent déjà pour l'API).
-    webhookBaseUrl: process.env.MONEYFUSION_WEBHOOK_BASE_URL || '',
+    publicBaseUrl: process.env.JEKO_PUBLIC_BASE_URL || '',
     // Bascule payin/payout sur un simulateur local (voir routes/devPaymentSimulationRoutes.js) au
-    // lieu de vrais appels MoneyFusion — permet de tester tout le parcours (recharge, retrait,
-    // webhooks, notifications, crédit/débit du wallet) sans IP fixe ni backend exposé publiquement.
-    // Verrouillé à false en production quelle que soit la valeur de la variable d'environnement.
-    mockMode: (process.env.MONEYFUSION_MOCK_MODE || 'false') === 'true' && nodeEnv !== 'production',
+    // lieu de vrais appels Jèko — permet de tester tout le parcours (recharge, retrait, webhooks,
+    // notifications, crédit/débit du wallet) sans clés ni backend exposé publiquement. Verrouillé à
+    // false en production quelle que soit la valeur de la variable d'environnement.
+    mockMode: (process.env.JEKO_MOCK_MODE || 'false') === 'true' && nodeEnv !== 'production',
   },
 };

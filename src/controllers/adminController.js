@@ -12,6 +12,7 @@ const notificationService = require('../services/notificationService');
 const annonceService = require('../services/annonceService');
 const auditService = require('../services/auditService');
 const securityEventService = require('../services/securityEventService');
+const deviceSessionService = require('../services/deviceSessionService');
 const pinService = require('../services/pinService');
 const { hash } = require('../utils/crypto');
 const { uploadBuffer, destroyByUrl } = require('../config/cloudinary');
@@ -344,6 +345,85 @@ async function reviewUserKyc(req, res, next) {
   }
 }
 
+// Gel de compte client (ex. signalement perte/vol du téléphone) — distinct d'une décision KYC
+// (reviewUserKyc) : coupe immédiatement la connexion, les transferts/paiements et la récupération
+// self-service par OTP (voir pinService.assertAccountNotBlocked et authController.js), sans
+// attendre une décision de conformité sur le dossier KYC. Ouvert à tout admin actif (`adminOnly`,
+// voir adminRoutes.js) car l'urgence prime quand un client signale un vol — débloquer est plus
+// sensible (ça redonne l'accès) et reste réservé à `super_admin`/`conformite` (`unblockUser`).
+async function blockUser(req, res, next) {
+  try {
+    const { motif } = req.body;
+    if (!motif?.trim()) throw new ApiError(400, 'Un motif est requis pour bloquer un compte');
+
+    const user = await userService.findById(req.params.id);
+    if (!user) throw new ApiError(404, 'Utilisateur introuvable');
+    if (user.compte_bloque) throw new ApiError(409, 'Ce compte est déjà bloqué');
+
+    await userService.setAccountLock(user.id, true, motif);
+    // Coupe immédiatement tout accès déjà en cours (appareil volé toujours connecté) : sans ça,
+    // l'access token (15 min) et le refresh token (30 jours) restaient valides malgré le gel.
+    await deviceSessionService.revokeAllSessions('client', user.id);
+
+    await notificationService.notify({
+      destinataireId: user.id,
+      typeDestinataire: 'client',
+      type: 'sécurité',
+      titre: t(user.langue, 'notif.accountBlocked.title'),
+      contenu: t(user.langue, 'notif.accountBlocked.body', { motif }),
+      titreCle: 'notif.accountBlocked.title',
+      contenuCle: 'notif.accountBlocked.body',
+      params: { motif },
+    });
+
+    await auditService.log({
+      adminId: req.auth.id,
+      adminNom: req.auth.nom,
+      action: 'compte.blocage',
+      cibleType: 'user',
+      cibleId: user.id,
+      détails: { motif, telephone: user.telephone },
+    });
+
+    ok(res, { updated: true, compteBloque: true });
+  } catch (e) {
+    next(e);
+  }
+}
+
+async function unblockUser(req, res, next) {
+  try {
+    const user = await userService.findById(req.params.id);
+    if (!user) throw new ApiError(404, 'Utilisateur introuvable');
+    if (!user.compte_bloque) throw new ApiError(409, "Ce compte n'est pas bloqué");
+
+    await userService.setAccountLock(user.id, false, null);
+
+    await notificationService.notify({
+      destinataireId: user.id,
+      typeDestinataire: 'client',
+      type: 'sécurité',
+      titre: t(user.langue, 'notif.accountUnblocked.title'),
+      contenu: t(user.langue, 'notif.accountUnblocked.body'),
+      titreCle: 'notif.accountUnblocked.title',
+      contenuCle: 'notif.accountUnblocked.body',
+    });
+
+    await auditService.log({
+      adminId: req.auth.id,
+      adminNom: req.auth.nom,
+      action: 'compte.deblocage',
+      cibleType: 'user',
+      cibleId: user.id,
+      détails: { telephone: user.telephone },
+    });
+
+    ok(res, { updated: true, compteBloque: false });
+  } catch (e) {
+    next(e);
+  }
+}
+
 async function listMerchants(req, res, next) {
   try {
     const { statutKyb, search, dateDebut, dateFin, limit, offset } = req.query;
@@ -427,6 +507,81 @@ async function reviewMerchantKyb(req, res, next) {
     });
 
     ok(res, { updated: true, statutKyb: decision });
+  } catch (e) {
+    next(e);
+  }
+}
+
+// Gel de compte Marchand — même logique que blockUser/unblockUser côté client (voir commentaire
+// là-bas). Les marchands n'ont pas de colonne `langue` (comme pour les autres notifications
+// marchand, voir transferService.confirmerPayout) : titre/contenu par défaut restent français,
+// mais titreCle/contenuCle permettent à mobilepro de retraduire dans sa langue active.
+async function blockMerchant(req, res, next) {
+  try {
+    const { motif } = req.body;
+    if (!motif?.trim()) throw new ApiError(400, 'Un motif est requis pour bloquer un compte');
+
+    const merchant = await merchantService.findById(req.params.id);
+    if (!merchant) throw new ApiError(404, 'Marchand introuvable');
+    if (merchant.compte_bloque) throw new ApiError(409, 'Ce compte est déjà bloqué');
+
+    await merchantService.setAccountLock(merchant.id, true, motif);
+    await deviceSessionService.revokeAllSessions('marchand', merchant.id);
+
+    await notificationService.notify({
+      destinataireId: merchant.id,
+      typeDestinataire: 'marchand',
+      type: 'sécurité',
+      titre: t(undefined, 'notif.accountBlocked.title'),
+      contenu: t(undefined, 'notif.accountBlocked.body', { motif }),
+      titreCle: 'notif.accountBlocked.title',
+      contenuCle: 'notif.accountBlocked.body',
+      params: { motif },
+    });
+
+    await auditService.log({
+      adminId: req.auth.id,
+      adminNom: req.auth.nom,
+      action: 'compte.blocage',
+      cibleType: 'merchant',
+      cibleId: merchant.id,
+      détails: { motif, telephone: merchant.telephone },
+    });
+
+    ok(res, { updated: true, compteBloque: true });
+  } catch (e) {
+    next(e);
+  }
+}
+
+async function unblockMerchant(req, res, next) {
+  try {
+    const merchant = await merchantService.findById(req.params.id);
+    if (!merchant) throw new ApiError(404, 'Marchand introuvable');
+    if (!merchant.compte_bloque) throw new ApiError(409, "Ce compte n'est pas bloqué");
+
+    await merchantService.setAccountLock(merchant.id, false, null);
+
+    await notificationService.notify({
+      destinataireId: merchant.id,
+      typeDestinataire: 'marchand',
+      type: 'sécurité',
+      titre: t(undefined, 'notif.accountUnblocked.title'),
+      contenu: t(undefined, 'notif.accountUnblocked.body'),
+      titreCle: 'notif.accountUnblocked.title',
+      contenuCle: 'notif.accountUnblocked.body',
+    });
+
+    await auditService.log({
+      adminId: req.auth.id,
+      adminNom: req.auth.nom,
+      action: 'compte.deblocage',
+      cibleType: 'merchant',
+      cibleId: merchant.id,
+      détails: { telephone: merchant.telephone },
+    });
+
+    ok(res, { updated: true, compteBloque: false });
   } catch (e) {
     next(e);
   }
@@ -766,9 +921,13 @@ module.exports = {
   listUsers,
   getUser,
   reviewUserKyc,
+  blockUser,
+  unblockUser,
   listMerchants,
   getMerchant,
   reviewMerchantKyb,
+  blockMerchant,
+  unblockMerchant,
   listTransactions,
   listKycDocuments,
   listKybDocuments,

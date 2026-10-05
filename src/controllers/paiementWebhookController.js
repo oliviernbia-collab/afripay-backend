@@ -1,56 +1,62 @@
 const { ok } = require('../utils/response');
 const rechargeService = require('../services/rechargeService');
 const transferService = require('../services/transferService');
+const jekoService = require('../services/jekoService');
 
 /**
- * Réception des confirmations MoneyFusion (payin = encaissement Client, payout = retrait
- * Marchand) — voir services/moneyFusionService.js pour le contexte complet (IP fixe requise pour
- * le payout, backend qui doit être exposé publiquement pour recevoir ces appels).
+ * Réception des confirmations Jèko (payin = encaissement Client, payout = retrait Marchand) — voir
+ * services/jekoService.js pour le contexte complet.
  *
- * Route PUBLIQUE (pas de JWT — MoneyFusion nous appelle directement, il n'a pas de session
- * AfriPay). Aucun mécanisme de signature n'est documenté par MoneyFusion : la seule vérification
- * possible est que le token du webhook corresponde à une transaction `en_attente` que NOUS avons
- * nous-mêmes initiée (voir rechargeService.confirmerPayin / transferService.confirmerPayout) — pas
- * une preuve cryptographique d'authenticité. À renforcer si MoneyFusion documente une signature un
- * jour.
+ * Route PUBLIQUE (pas de JWT — Jèko nous appelle directement, il n'a pas de session AfriPay) mais
+ * SIGNÉE : chaque webhook porte un en-tête `Jeko-Signature` (HMAC-SHA256 du corps brut), vérifié
+ * ici avant tout traitement via jekoService.verifyWebhookSignature — `req.rawBody` est capturé par
+ * le `verify` d'express.json() dans app.js, seul moyen de retrouver les octets bruts une fois que
+ * express.json() a déjà parsé le corps en objet.
  *
- * Répond TOUJOURS 200 (sauf payload complètement illisible) : une erreur 5xx pousserait
- * MoneyFusion à réessayer indéfiniment un webhook qu'on ne pourra de toute façon jamais traiter
- * correctement (ex. token inconnu) — le détail de chaque cas est simplement loggé côté serveur.
+ * Répond TOUJOURS 200 une fois la signature validée (sauf payload illisible/événement inattendu) :
+ * une erreur 5xx pousserait Jèko à réessayer indéfiniment un webhook qu'on ne pourra de toute façon
+ * jamais traiter correctement (ex. référence inconnue) — le détail de chaque cas est simplement
+ * loggé côté serveur. Une signature invalide, elle, est rejetée en 401.
  */
-async function moneyFusionWebhook(req, res) {
-  const { event } = req.body || {};
-  // La doc utilise `token` pour le payin et `tokenPay` pour le payout (nommage incohérent côté
-  // MoneyFusion, pas une erreur ici) — on accepte les deux.
-  const reference = req.body?.tokenPay || req.body?.token;
+async function jekoWebhook(req, res) {
+  const signature = req.get('Jeko-Signature');
+  if (!jekoService.verifyWebhookSignature(req.rawBody, signature)) {
+    console.warn('[jeko webhook] signature absente ou invalide — payload rejeté');
+    return res.status(401).json({ received: false });
+  }
 
-  if (!event || !reference) {
-    console.warn('[moneyfusion webhook] payload invalide ou incomplet:', JSON.stringify(req.body));
+  const eventType = req.get('Jeko-Event');
+  const { status, transactionDetails, transactionType, id } = req.body || {};
+  const reference = transactionDetails?.reference;
+
+  if (eventType !== 'TRANSACTION_COMPLETED' || !reference) {
+    console.warn(`[jeko webhook] événement ignoré (${eventType || 'inconnu'}, id=${id || '?'})`);
     return ok(res, { received: true });
   }
 
+  const réussi = status === 'success';
   try {
-    if (event.startsWith('payin.')) {
-      const traité = await rechargeService.confirmerPayin(reference, { réussi: event === 'payin.session.completed' });
-      if (!traité && event !== 'payin.session.pending') {
-        console.warn(`[moneyfusion webhook] payin ${event} : aucune recharge en_attente pour le token ${reference}`);
+    if (transactionType === 'payment') {
+      const traité = await rechargeService.confirmerPayin(reference, { réussi });
+      if (!traité && status !== 'pending') {
+        console.warn(`[jeko webhook] paiement ${status} : aucune recharge en_attente pour la référence ${reference}`);
       }
-    } else if (event.startsWith('payout.')) {
-      const traité = await transferService.confirmerPayout(reference, { réussi: event === 'payout.session.completed' });
+    } else if (transactionType === 'transfer') {
+      const traité = await transferService.confirmerPayout(reference, { réussi });
       if (!traité) {
-        console.warn(`[moneyfusion webhook] payout ${event} : aucun retrait en_attente pour le token ${reference}`);
+        console.warn(`[jeko webhook] transfert ${status} : aucun retrait en_attente pour la référence ${reference}`);
       }
     } else {
-      console.warn('[moneyfusion webhook] event inconnu:', event);
+      console.warn('[jeko webhook] transactionType inconnu:', transactionType);
     }
   } catch (e) {
-    // Ne remonte jamais une 5xx à MoneyFusion pour une erreur de notre côté (voir commentaire
-    // d'en-tête) — loggée pour investigation, la transaction reste `en_attente` et pourra être
-    // réconciliée manuellement si le webhook n'est jamais retenté avec succès.
-    console.error(`[moneyfusion webhook] erreur de traitement (${event}, ${reference}):`, e.message);
+    // Ne remonte jamais une 5xx à Jèko pour une erreur de notre côté (voir commentaire d'en-tête) —
+    // loggée pour investigation, la transaction reste `en_attente` et pourra être réconciliée
+    // manuellement si le webhook n'est jamais retenté avec succès.
+    console.error(`[jeko webhook] erreur de traitement (${transactionType}, ${reference}):`, e.message);
   }
 
   ok(res, { received: true });
 }
 
-module.exports = { moneyFusionWebhook };
+module.exports = { jekoWebhook };

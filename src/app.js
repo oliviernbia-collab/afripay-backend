@@ -50,7 +50,12 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json({ limit: '5mb' }));
+// `verify` conserve le corps BRUT (avant parsing JSON) sur `req.rawBody` — nécessaire pour
+// vérifier la signature HMAC-SHA256 des webhooks Jèko (calculée sur les octets bruts du corps,
+// voir services/jekoService.js verifyWebhookSignature et controllers/paiementWebhookController.js) ;
+// un objet déjà reparsé en JSON.stringify ne redonnerait pas exactement les mêmes octets (ordre des
+// clés, espaces...) et ferait échouer la vérification.
+app.use(express.json({ limit: '5mb', verify: (req, res, buf) => { req.rawBody = buf; } }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use(morgan('dev'));

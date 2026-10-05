@@ -30,10 +30,17 @@ router.get('/dashboard', ...adminOnly, adminController.dashboard);
 router.get('/utilisateurs', ...adminOnly, adminController.listUsers);
 router.get('/utilisateurs/:id', ...adminOnly, adminController.getUser);
 router.post('/utilisateurs/:id/kyc', ...auditReaders, adminController.reviewUserKyc);
+// Gel de compte (signalement perte/vol) : bloquer est ouvert à tout admin actif pour que
+// l'urgence ne dépende pas de la disponibilité d'un rôle conformité ; débloquer (redonne l'accès)
+// reste réservé à super_admin/conformite, comme les décisions KYC.
+router.post('/utilisateurs/:id/bloquer', ...adminOnly, adminController.blockUser);
+router.post('/utilisateurs/:id/debloquer', ...auditReaders, adminController.unblockUser);
 
 router.get('/marchands', ...adminOnly, adminController.listMerchants);
 router.get('/marchands/:id', ...adminOnly, adminController.getMerchant);
 router.post('/marchands/:id/kyb', ...auditReaders, adminController.reviewMerchantKyb);
+router.post('/marchands/:id/bloquer', ...adminOnly, adminController.blockMerchant);
+router.post('/marchands/:id/debloquer', ...auditReaders, adminController.unblockMerchant);
 
 router.get('/transactions', ...adminOnly, adminController.listTransactions);
 

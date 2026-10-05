@@ -15,4 +15,18 @@ function toValidAmount(value, { max } = {}) {
   return n;
 }
 
-module.exports = { toValidAmount };
+// Arrondit un montant FCFA à 2 décimales (colonnes `DECIMAL(18,2)`) — évite les résidus
+// binaires d'un simple `montant * taux` (ex. 0.025 * 10000 peut sortir 250.00000000000003).
+function round2(n) {
+  return Math.round(n * 100) / 100;
+}
+
+// Frais retenu par AfriPay sur une opération (recharge Client, retrait Marchand) : le montant
+// demandé reste la base envoyée à/débitée par Jèko côté externe, le frais réduit uniquement ce
+// qui est réellement crédité au wallet (recharge) ou réellement transféré au Mobile Money
+// (retrait) — voir rechargeService.rechargeWallet / transferService.externalTransfer.
+function calculerFrais(montant, taux) {
+  return round2(Number(montant) * Number(taux));
+}
+
+module.exports = { toValidAmount, round2, calculerFrais };

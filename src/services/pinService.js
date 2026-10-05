@@ -20,7 +20,17 @@ async function assertNotLockedOut({ telephone, evenement }) {
 // confirmation additionnelle "au-delà d'un certain montant" pour le paiement biométrique
 // uniquement) ; pour les transferts (5.4/6.4, confirmation systématique), appeler avec
 // threshold=0 pour la rendre obligatoire quel que soit le montant.
+// Compte client gelé par un admin (ex. signalement perte/vol du téléphone, voir userService.setAccountLock) :
+// bloque toute opération qui débite un wallet, quelle que soit la session/le token en circulation.
+// Ne s'applique qu'aux clients (`account.compte_bloque` est toujours undefined pour un marchand).
+function assertAccountNotBlocked(account) {
+  if (account.compte_bloque) {
+    throw new ApiError(403, 'Compte bloqué. Contactez le support AfriPay pour le débloquer.');
+  }
+}
+
 async function assertPinConfirmation({ account, acteurType, acteurId, montant, pin, threshold = 0, req }) {
+  assertAccountNotBlocked(account);
   if (threshold > 0 && Number(montant) < threshold) return;
   if (!pin) {
     throw new ApiError(
@@ -47,6 +57,7 @@ async function assertPinConfirmation({ account, acteurType, acteurId, montant, p
 // Vérifie le PIN actuel avant de le remplacer (changement de PIN) — empêche qu'une session
 // volée (token encore valide) suffise à changer le PIN sans le connaître.
 async function assertCurrentPinForChange({ account, acteurType, acteurId, currentPin, req }) {
+  assertAccountNotBlocked(account);
   if (!account.code_pin_hash) return; // premier réglage du PIN (onboarding) : rien à confirmer
 
   await assertNotLockedOut({ telephone: account.telephone, evenement: 'pin_changement' });

@@ -106,4 +106,14 @@ async function transferToExternal(req, res, next) {
   }
 }
 
-module.exports = { transferToAfripayAccount, transferToExternal };
+// Taux de frais AfriPay sur le retrait Marchand (voir transferService.externalTransfer) —
+// permet à l'app de calculer et d'afficher un aperçu ("vous recevrez X") avant confirmation.
+async function fraisRetrait(req, res, next) {
+  try {
+    ok(res, { taux: env.business.fraisRetraitMarchandTaux });
+  } catch (e) {
+    next(e);
+  }
+}
+
+module.exports = { transferToAfripayAccount, transferToExternal, fraisRetrait };

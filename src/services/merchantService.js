@@ -46,6 +46,15 @@ async function updateKybStatus(merchantId, statut) {
   await query('UPDATE merchants SET statut_kyb = :statut WHERE id = :merchantId', { merchantId, statut });
 }
 
+// Gel de compte (ex. signalement perte/vol du téléphone) — même logique que userService.setAccountLock.
+async function setAccountLock(merchantId, bloque, motif) {
+  await query(
+    `UPDATE merchants SET compte_bloque = :bloque, motif_blocage = :motif,
+            date_blocage = :dateBlocage WHERE id = :merchantId`,
+    { merchantId, bloque: bloque ? 1 : 0, motif: bloque ? motif || null : null, dateBlocage: bloque ? new Date() : null }
+  );
+}
+
 async function updateProfile(merchantId, fields) {
   const allowed = ['raison_sociale', 'email', 'adresse', 'categorie_activite', 'logo_url'];
   const sets = [];
@@ -79,6 +88,7 @@ module.exports = {
   setPin,
   setPassword,
   updateKybStatus,
+  setAccountLock,
   updateProfile,
   listAllIds,
   toPublic,

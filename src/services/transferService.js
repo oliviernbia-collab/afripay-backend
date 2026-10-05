@@ -3,8 +3,10 @@ const { query, pool } = require('../config/db');
 const ApiError = require('../utils/ApiError');
 const walletService = require('./walletService');
 const transactionService = require('./transactionService');
-const moneyFusionService = require('./moneyFusionService');
+const jekoService = require('./jekoService');
 const notificationService = require('./notificationService');
+const { calculerFrais, round2 } = require('../utils/amount');
+const env = require('../config/env');
 const { t } = require('../i18n');
 
 // Transfert interne AfriPay (Client -> Client, Marchand -> Client, Marchand -> Marchand).
@@ -28,19 +30,17 @@ async function internalTransfer({ fromWalletId, toWalletId, montant, libelle }) 
 const VALID_OPERATORS = ['wave', 'orange_money', 'moov_money', 'mtn_money'];
 
 /**
- * RETRAIT SORTANT VERS MOBILE MONEY RÉEL (payout MoneyFusion) — section 6.4.
+ * RETRAIT SORTANT VERS MOBILE MONEY RÉEL (payout Jèko) — section 6.4.
  * ---------------------------------------------------------------------
- * Le wallet marchand est débité immédiatement (verrouillé, voir plus bas) car MoneyFusion ne
- * garantit la confirmation qu'après coup, par webhook — si on créditait/débitait seulement à la
- * confirmation, rien n'empêcherait le marchand de relancer un retrait pendant que le premier est
- * encore en vol. La transaction est créée `en_attente` ; le webhook `payout.session.completed`
- * la passe à `réussi` (rien d'autre à faire, déjà débité), et `payout.session.cancelled` la passe
- * à `échoué` ET REMBOURSE le wallet (voir controllers/paiementWebhookController.js) — contrairement
- * à l'ancien mock, qui ne pouvait jamais échouer et n'avait donc pas besoin de ce remboursement.
+ * Le wallet marchand est débité immédiatement (verrouillé, voir plus bas) car Jèko ne garantit la
+ * confirmation qu'après coup, par webhook — si on créditait/débitait seulement à la confirmation,
+ * rien n'empêcherait le marchand de relancer un retrait pendant que le premier est encore en vol.
+ * La transaction est créée `en_attente` ; le webhook `TRANSACTION_COMPLETED` (status `success`) la
+ * passe à `réussi` (rien d'autre à faire, déjà débité), et `status: error` la passe à `échoué` ET
+ * REMBOURSE le wallet (voir controllers/paiementWebhookController.js).
  *
- * ATTENTION déploiement : l'API payout de MoneyFusion exige une adresse IP sortante FIXE,
- * whitelistée dans leur tableau de bord — inutilisable depuis un poste de développement local
- * (XAMPP) tel quel. Voir moneyFusionService.js et le README pour le détail.
+ * Voir jekoService.js pour la forme exacte du bénéficiaire transmise à Jèko, non confirmée par la
+ * doc publique et à vérifier avant un vrai passage en production.
  * ---------------------------------------------------------------------
  */
 async function externalTransfer({ merchant, opérateurDestination, numéroDestinataire, montant }) {
@@ -74,11 +74,19 @@ async function externalTransfer({ merchant, opérateurDestination, numéroDestin
     conn.release();
   }
 
+  // Frais AfriPay de 2,5% sur le retrait Marchand, déduit du montant demandé : le wallet marchand
+  // est débité du plein montant (ci-dessus, inchangé) mais seul `montantNetAPayer` part réellement
+  // vers le Mobile Money du marchand (voir jekoService.initierPayout) — le frais reste la marge
+  // d'AfriPay.
+  const frais = calculerFrais(amount, env.business.fraisRetraitMarchandTaux);
+  const montantNetAPayer = round2(amount - frais);
+
   const transaction = await transactionService.recordTransaction({
     type: 'transfert',
     walletSourceId: wallet.id,
     walletDestinationId: null,
     montant: amount,
+    frais,
     statut: 'en_attente',
     méthode: 'mobile_money',
     libelle: `Transfert vers ${opérateurDestination} (${numéroDestinataire})`,
@@ -87,16 +95,17 @@ async function externalTransfer({ merchant, opérateurDestination, numéroDestin
   let tokenPay;
   try {
     let simulationUrl;
-    ({ tokenPay, simulationUrl } = await moneyFusionService.initierPayout({
-      montant: amount,
+    ({ tokenPay, simulationUrl } = await jekoService.initierPayout({
+      montant: montantNetAPayer,
       telephone: numéroDestinataire,
       opérateur: opérateurDestination,
+      nomBeneficiaire: merchant.raison_sociale || merchant.telephone,
     }));
-    // Mode simulation locale (voir moneyFusionService.js) : l'app Marchand n'affiche pas de lien à
-    // ouvrir pour ce flux (contrairement à la recharge) — le lien est donc juste loggé ici pour
-    // celui qui fait tourner le serveur en dev, à ouvrir soi-même dans un navigateur pour simuler
-    // la confirmation.
-    if (simulationUrl) console.log(`[moneyfusion:mock] simuler la confirmation du retrait ${transaction.id} -> ${simulationUrl}`);
+    // Mode simulation locale (voir jekoService.js) : l'app Marchand n'affiche pas de lien à ouvrir
+    // pour ce flux (contrairement à la recharge) — le lien est donc juste loggé ici pour celui qui
+    // fait tourner le serveur en dev, à ouvrir soi-même dans un navigateur pour simuler la
+    // confirmation.
+    if (simulationUrl) console.log(`[jeko:mock] simuler la confirmation du retrait ${transaction.id} -> ${simulationUrl}`);
   } catch (e) {
     // L'initiation elle-même a échoué (pas juste "en attente de confirmation") : rembourser tout
     // de suite plutôt que de laisser le marchand avec un wallet débité pour rien.
@@ -124,11 +133,11 @@ async function externalTransfer({ merchant, opérateurDestination, numéroDestin
   return { transaction, wallet: updatedWallet };
 }
 
-// Appelé par le webhook MoneyFusion (voir controllers/paiementWebhookController.js) — jamais par
-// une app mobile. `tokenPay` = référence renvoyée par initierPayout, retrouvée dans
-// transfer_external.reference_externe. Le wallet a déjà été débité à l'initiation (voir
-// externalTransfer ci-dessus) : en cas d'échec confirmé, on le REMBOURSE ; en cas de succès, rien
-// de plus à faire côté wallet. Ne fait rien (silencieusement) si aucun retrait `en_attente` ne
+// Appelé par le webhook Jèko (voir controllers/paiementWebhookController.js) — jamais par une app
+// mobile. `tokenPay` = référence AfriPay renvoyée telle quelle par jekoService.initierPayout,
+// retrouvée dans transfer_external.reference_externe. Le wallet a déjà été débité à l'initiation
+// (voir externalTransfer ci-dessus) : en cas d'échec confirmé, on le REMBOURSE ; en cas de succès,
+// rien de plus à faire côté wallet. Ne fait rien (silencieusement) si aucun retrait `en_attente` ne
 // correspond (déjà traité, ou token jamais émis par nous).
 async function confirmerPayout(tokenPay, { réussi }) {
   const rows = await query(
