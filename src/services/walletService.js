@@ -1,6 +1,23 @@
 const { v4: uuidv4 } = require('uuid');
 const { query, pool } = require('../config/db');
 const ApiError = require('../utils/ApiError');
+const realtime = require('../realtime/socket');
+
+function emitBalance(wallet) {
+  realtime.emitToOwner(wallet.type_propriétaire, wallet.propriétaire_id, 'wallet:updated', {
+    walletId: wallet.id,
+    solde: wallet.solde,
+  });
+  // Même information, diffusée en plus à tout le back-office (voir web/src/pages/Wallets.jsx) —
+  // sans ça, un solde qui change côté mobile ne se voyait sur le web qu'au prochain rechargement
+  // manuel de la page.
+  realtime.emitToAdmins('admin:wallet_updated', {
+    walletId: wallet.id,
+    ownerId: wallet.propriétaire_id,
+    ownerType: wallet.type_propriétaire,
+    solde: wallet.solde,
+  });
+}
 
 async function createWallet(ownerId, ownerType) {
   const id = uuidv4();
@@ -49,7 +66,14 @@ async function transferBetweenWallets({ fromWalletId, toWalletId, montant }) {
     await conn.query('UPDATE wallets SET solde = solde + ? WHERE id = ?', [amount, toWalletId]);
 
     await conn.commit();
-    return { source, dest };
+    // Nouveaux soldes calculés en JS plutôt que re-sélectionnés : sans risque puisqu'on est encore
+    // sous les verrous de ligne pris ci-dessus (SELECT ... FOR UPDATE), aucune écriture concurrente
+    // n'a pu passer entre-temps.
+    const newSource = { ...source, solde: Number(source.solde) - amount };
+    const newDest = { ...dest, solde: Number(dest.solde) + amount };
+    emitBalance(newSource);
+    emitBalance(newDest);
+    return { source: newSource, dest: newDest };
   } catch (e) {
     await conn.rollback();
     throw e;
@@ -60,6 +84,8 @@ async function transferBetweenWallets({ fromWalletId, toWalletId, montant }) {
 
 async function creditWallet(walletId, montant) {
   await query('UPDATE wallets SET solde = solde + :montant WHERE id = :walletId', { walletId, montant });
+  const wallet = await getWalletById(walletId);
+  if (wallet) emitBalance(wallet);
 }
 
 module.exports = { createWallet, getWalletByOwner, getWalletById, transferBetweenWallets, creditWallet };

@@ -1,7 +1,13 @@
 const { v4: uuidv4 } = require('uuid');
 const { query } = require('../config/db');
 const { randomReference } = require('../utils/crypto');
+const realtime = require('../realtime/socket');
 
+// Toute transaction (recharge, transfert, achat) passe par ICI à la création ET par updateStatus
+// ci-dessous pour chaque changement de statut (en_attente -> réussi/échoué) : deux points de passage
+// uniques, donc deux bons endroits pour prévenir le back-office en temps réel (voir
+// realtime/socket.js) qu'une action vient de se produire côté mobile — Dashboard/Transactions
+// n'ont ainsi pas besoin d'être rechargés manuellement pour la voir apparaître.
 async function recordTransaction({
   type,
   walletSourceId,
@@ -32,7 +38,17 @@ async function recordTransaction({
       reference,
     }
   );
-  return getById(id);
+  const transaction = await getById(id);
+  realtime.emitToAdmins('admin:transaction_new', transaction);
+  return transaction;
+}
+
+// Centralise les `UPDATE transactions SET statut = ...` auparavant dupliqués dans
+// transferService/rechargeService (chacun avec sa propre requête SQL) — un seul endroit qui fait à
+// la fois l'écriture et l'émission temps réel évite d'oublier l'une des deux dans un futur appelant.
+async function updateStatus(id, statut) {
+  await query('UPDATE transactions SET statut = :statut WHERE id = :id', { statut, id });
+  realtime.emitToAdmins('admin:transaction_updated', { id, statut });
 }
 
 async function getById(id) {
@@ -165,4 +181,13 @@ async function statsForWallet(walletId, period = 'jour') {
   );
 }
 
-module.exports = { recordTransaction, getById, listForWallet, statsForWallet, attachCounterparties, maskName, maskPhone };
+module.exports = {
+  recordTransaction,
+  updateStatus,
+  getById,
+  listForWallet,
+  statsForWallet,
+  attachCounterparties,
+  maskName,
+  maskPhone,
+};

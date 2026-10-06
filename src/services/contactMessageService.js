@@ -1,6 +1,7 @@
 const { v4: uuidv4 } = require('uuid');
 const { query } = require('../config/db');
 const { normalizeDateRange } = require('../utils/dateRange');
+const realtime = require('../realtime/socket');
 
 async function create({ nom, email, telephone, message }) {
   const id = uuidv4();
@@ -9,6 +10,9 @@ async function create({ nom, email, telephone, message }) {
      VALUES (:id, :nom, :email, :telephone, :message)`,
     { id, nom, email: email || null, telephone: telephone || null, message }
   );
+  // Visible immédiatement dans le back-office (voir web/src/pages/Contact*), sans que l'admin ait
+  // à recharger la page pour découvrir un nouveau message.
+  realtime.emitToAdmins('admin:contact_new', { id, nom, email: email || null, telephone: telephone || null });
   return id;
 }
 

@@ -107,7 +107,7 @@ async function confirmerPayin(token, { réussi }) {
   const nouveauStatut = réussi ? 'réussi' : 'échoué';
   await query('UPDATE recharge_providers SET statut = :statut WHERE id = :id', { statut: nouveauStatut, id: recharge.id });
   if (recharge.transaction_id) {
-    await query('UPDATE transactions SET statut = :statut WHERE id = :id', { statut: nouveauStatut, id: recharge.transaction_id });
+    await transactionService.updateStatus(recharge.transaction_id, nouveauStatut);
   }
   if (réussi) {
     // recharge_providers ne stocke pas le wallet_id (seulement user_id) — le retrouver via le

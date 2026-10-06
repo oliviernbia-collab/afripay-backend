@@ -3,6 +3,7 @@ const { query } = require('../config/db');
 const env = require('../config/env');
 const { signedUrl: cloudinarySignedUrl } = require('../config/cloudinary');
 const { signIfLocalUpload } = require('../utils/signedUpload');
+const realtime = require('../realtime/socket');
 
 // Les documents KYC/KYB sont des pièces d'identité — jamais renvoyés comme une URL statique et
 // durable. `includeFile: false` (utilisé côté admin pour les rôles non habilités, ex. "support" —
@@ -25,6 +26,8 @@ async function addDocument({ userId, merchantId, typeDocument, fichierRef }) {
      VALUES (:id, :userId, :merchantId, :typeDocument, :fichierRef, 'en_attente')`,
     { id, userId: userId || null, merchantId: merchantId || null, typeDocument, fichierRef }
   );
+  // Visible immédiatement dans la file de vérification du back-office, sans recharger la page.
+  realtime.emitToAdmins('admin:kyc_submitted', { id, userId: userId || null, merchantId: merchantId || null, typeDocument });
   return id;
 }
 

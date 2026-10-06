@@ -84,11 +84,12 @@ module.exports = {
     // métier KYC — empêche qu'un montant non borné (ex. "1e400") ne crée un solde arbitraire.
     maxTransactionFcfa: Number(process.env.MAX_TRANSACTION_FCFA || 5000000),
     // Frais AfriPay retenus sur les flux Mobile Money réels (Jèko prend 1,5% de son côté, indépendant
-    // de ceci) : 2,5% à la recharge Client et 2,5% au retrait Marchand, déduits du montant demandé
-    // (voir utils/amount.calculerFrais). Le paiement (achat) Client<->Marchand et le transfert
-    // compte à compte interne restent gratuits — aucun frais n'y est calculé.
+    // de ceci) : 2,5% à la recharge (Client) et 2,5% au retrait vers Mobile Money externe (Client OU
+    // Marchand, même taux — voir transferService.externalTransfer), déduits du montant demandé (voir
+    // utils/amount.calculerFrais). Le paiement (achat) Client<->Marchand et le transfert compte à
+    // compte interne restent gratuits — aucun frais n'y est calculé.
     fraisRechargeTaux: Number(process.env.FRAIS_RECHARGE_TAUX ?? 0.025),
-    fraisRetraitMarchandTaux: Number(process.env.FRAIS_RETRAIT_MARCHAND_TAUX ?? 0.025),
+    fraisRetraitTaux: Number(process.env.FRAIS_RETRAIT_TAUX ?? process.env.FRAIS_RETRAIT_MARCHAND_TAUX ?? 0.025),
     // Durée de validité du code de présentation "palm_code" (repli QR quand la reconnaissance
     // caméra échoue/est indisponible) avant qu'il ne doive être régénéré — limite la fenêtre de
     // rejeu si le QR affiché est capturé.

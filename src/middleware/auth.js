@@ -1,5 +1,6 @@
 const ApiError = require('../utils/ApiError');
 const { verifyAccessToken } = require('../utils/jwt');
+const permissionService = require('../services/permissionService');
 
 // Vérifie le JWT et attache req.auth = { id, type: 'client'|'marchand'|'admin', role? }
 function authenticate(req, res, next) {
@@ -37,4 +38,22 @@ function requireRole(...roles) {
   };
 }
 
-module.exports = { authenticate, requireType, requireRole };
+// Restreint l'accès selon la permission configurable associée au rôle admin (voir
+// backend/src/services/permissionService.js et database/schema.sql — table role_permissions).
+// N'a de sens qu'après `requireType('admin')`. 'super_admin' contourne toujours cette vérification.
+function requirePermission(code) {
+  return async (req, res, next) => {
+    try {
+      if (!req.auth || req.auth.type !== 'admin') {
+        return next(new ApiError(403, 'Accès refusé pour ce type de compte'));
+      }
+      const allowed = await permissionService.roleHasPermission(req.auth.role, code);
+      if (!allowed) return next(new ApiError(403, 'Permission insuffisante pour cette action'));
+      next();
+    } catch (e) {
+      next(e);
+    }
+  };
+}
+
+module.exports = { authenticate, requireType, requireRole, requirePermission };

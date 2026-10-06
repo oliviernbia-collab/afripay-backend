@@ -5,6 +5,7 @@ const { signAccessToken, signRefreshToken, verifyRefreshToken } = require('../ut
 const { setAdminRefreshCookie, clearAdminRefreshCookie, readAdminRefreshCookie } = require('../utils/adminAuthCookie');
 const { v4: uuidv4 } = require('uuid');
 const adminService = require('../services/adminService');
+const permissionService = require('../services/permissionService');
 const userService = require('../services/userService');
 const merchantService = require('../services/merchantService');
 const kycService = require('../services/kycService');
@@ -27,6 +28,17 @@ const MIN_ADMIN_PASSWORD_LENGTH = 8;
 // d'identité/justificatif de domicile en clair (moindre privilège).
 function canViewDocumentFiles(role) {
   return role === 'super_admin' || role === 'conformite';
+}
+
+// Déballe une ligne `admins` pour l'API (jamais le hash) en y attachant les permissions
+// effectives du rôle — tous les endroits qui renvoient l'admin courant (login/me/profil/photo)
+// doivent le faire via ce helper : la sidebar/les routes du front filtrent sur `admin.permissions`
+// (voir web/src/context/AuthContext.jsx::updateAdmin, qui remplace l'objet admin en entier), donc
+// un champ manquant ferait disparaître des menus/pages jusqu'au prochain rechargement complet.
+async function toPublicAdmin(adminRow) {
+  const { mot_de_passe_hash, ...publicAdmin } = adminRow;
+  publicAdmin.permissions = await permissionService.getPermissionsForRole(adminRow.role);
+  return publicAdmin;
 }
 
 // Supprime l'ancienne photo Cloudinary (best-effort, ne doit jamais faire échouer l'action
@@ -70,10 +82,9 @@ async function login(req, res, next) {
     const accessToken = signAccessToken({ id: admin.id, type: 'admin', role: admin.role, nom: admin.nom });
     const refreshToken = signRefreshToken({ id: admin.id, type: 'admin', role: admin.role, nom: admin.nom });
     setAdminRefreshCookie(res, refreshToken);
-    const { mot_de_passe_hash, ...publicAdmin } = admin;
     // Le refreshToken ne repart jamais dans le corps JSON (voir cookie httpOnly ci-dessus) : le
     // front web n'a donc aucun moyen de le stocker en localStorage, même par erreur.
-    ok(res, { admin: publicAdmin, accessToken });
+    ok(res, { admin: await toPublicAdmin(admin), accessToken });
   } catch (e) {
     next(e);
   }
@@ -117,8 +128,7 @@ async function me(req, res, next) {
   try {
     const admin = await adminService.findById(req.auth.id);
     if (!admin) throw new ApiError(404, 'Administrateur introuvable');
-    const { mot_de_passe_hash, ...publicAdmin } = admin;
-    ok(res, publicAdmin);
+    ok(res, await toPublicAdmin(admin));
   } catch (e) {
     next(e);
   }
@@ -148,8 +158,7 @@ async function updateMyProfile(req, res, next) {
       détails: { nom: nom ?? undefined, email: email ?? undefined },
     });
 
-    const { mot_de_passe_hash, ...publicAdmin } = updated;
-    ok(res, publicAdmin);
+    ok(res, await toPublicAdmin(updated));
   } catch (e) {
     next(e);
   }
@@ -220,8 +229,7 @@ async function uploadMyPhoto(req, res, next) {
       détails: { photo: true },
     });
 
-    const { mot_de_passe_hash, ...publicAdmin } = updated;
-    ok(res, publicAdmin);
+    ok(res, await toPublicAdmin(updated));
   } catch (e) {
     next(e);
   }
@@ -242,8 +250,7 @@ async function removeMyPhoto(req, res, next) {
       détails: { photo: false },
     });
 
-    const { mot_de_passe_hash, ...publicAdmin } = updated;
-    ok(res, publicAdmin);
+    ok(res, await toPublicAdmin(updated));
   } catch (e) {
     next(e);
   }
@@ -907,6 +914,43 @@ async function listAuditLogs(req, res, next) {
   }
 }
 
+// ---------------------------------------------------------------------
+// Matrice des permissions par rôle — réservée en dur à super_admin (voir adminRoutes.js)
+// ---------------------------------------------------------------------
+async function listPermissionsMatrix(req, res, next) {
+  try {
+    const [permissions, rolePermissions] = await Promise.all([
+      permissionService.listPermissions(),
+      permissionService.listRolePermissions(),
+    ]);
+    ok(res, { permissions, rolePermissions });
+  } catch (e) {
+    next(e);
+  }
+}
+
+async function updateRolePermissions(req, res, next) {
+  try {
+    const { conformite, support } = req.body;
+    const payload = {};
+    if (conformite !== undefined) payload.conformite = conformite;
+    if (support !== undefined) payload.support = support;
+    await permissionService.setRolePermissions(payload);
+
+    await auditService.log({
+      adminId: req.auth.id,
+      adminNom: req.auth.nom,
+      action: 'permissions.maj',
+      cibleType: 'role',
+      détails: { conformite, support },
+    });
+
+    ok(res, await permissionService.listRolePermissions());
+  } catch (e) {
+    next(e);
+  }
+}
+
 module.exports = {
   login,
   refreshSession,
@@ -941,4 +985,6 @@ module.exports = {
   createInternalUser,
   updateInternalUser,
   listAuditLogs,
+  listPermissionsMatrix,
+  updateRolePermissions,
 };

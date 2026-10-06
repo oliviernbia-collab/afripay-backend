@@ -5,6 +5,7 @@ const walletService = require('./walletService');
 const transactionService = require('./transactionService');
 const jekoService = require('./jekoService');
 const notificationService = require('./notificationService');
+const realtime = require('../realtime/socket');
 const { calculerFrais, round2 } = require('../utils/amount');
 const env = require('../config/env');
 const { t } = require('../i18n');
@@ -32,18 +33,21 @@ const VALID_OPERATORS = ['wave', 'orange_money', 'moov_money', 'mtn_money'];
 /**
  * RETRAIT SORTANT VERS MOBILE MONEY RÉEL (payout Jèko) — section 6.4.
  * ---------------------------------------------------------------------
- * Le wallet marchand est débité immédiatement (verrouillé, voir plus bas) car Jèko ne garantit la
+ * Ouvert au Client ET au Marchand (`ownerType`) : même mécanique des deux côtés, seul le wallet
+ * débité et la colonne de rattachement (transfer_external.user_id vs merchant_id) changent.
+ *
+ * Le wallet est débité immédiatement (verrouillé, voir plus bas) car Jèko ne garantit la
  * confirmation qu'après coup, par webhook — si on créditait/débitait seulement à la confirmation,
- * rien n'empêcherait le marchand de relancer un retrait pendant que le premier est encore en vol.
- * La transaction est créée `en_attente` ; le webhook `TRANSACTION_COMPLETED` (status `success`) la
- * passe à `réussi` (rien d'autre à faire, déjà débité), et `status: error` la passe à `échoué` ET
+ * rien n'empêcherait l'auteur du retrait d'en relancer un autre pendant que le premier est encore en
+ * vol. La transaction est créée `en_attente` ; le webhook `TRANSACTION_COMPLETED` (status `success`)
+ * la passe à `réussi` (rien d'autre à faire, déjà débité), et `status: error` la passe à `échoué` ET
  * REMBOURSE le wallet (voir controllers/paiementWebhookController.js).
  *
  * Voir jekoService.js pour la forme exacte du bénéficiaire transmise à Jèko, non confirmée par la
  * doc publique et à vérifier avant un vrai passage en production.
  * ---------------------------------------------------------------------
  */
-async function externalTransfer({ merchant, opérateurDestination, numéroDestinataire, montant }) {
+async function externalTransfer({ ownerId, ownerType, nomBeneficiaire, opérateurDestination, numéroDestinataire, montant }) {
   if (!VALID_OPERATORS.includes(opérateurDestination)) {
     throw new ApiError(400, `Opérateur de destination inconnu: ${opérateurDestination}`);
   }
@@ -52,18 +56,18 @@ async function externalTransfer({ merchant, opérateurDestination, numéroDestin
 
   // Débit verrouillé dans une transaction SQL (SELECT ... FOR UPDATE), comme le transfert interne
   // (walletService.transferBetweenWallets) : sans ce verrou, deux appels concurrents pouvaient lire
-  // le même solde initial et débiter chacun séparément, faisant passer le solde marchand en négatif.
+  // le même solde initial et débiter chacun séparément, faisant passer le solde en négatif.
   const conn = await pool.getConnection();
   let wallet;
   try {
     await conn.beginTransaction();
     const [rows] = await conn.query('SELECT * FROM wallets WHERE propriétaire_id = ? AND type_propriétaire = ? FOR UPDATE', [
-      merchant.id,
-      'marchand',
+      ownerId,
+      ownerType,
     ]);
     wallet = rows[0];
-    if (!wallet) throw new ApiError(404, 'Portefeuille marchand introuvable');
-    if (Number(wallet.solde) < amount) throw new ApiError(400, 'Solde marchand insuffisant');
+    if (!wallet) throw new ApiError(404, 'Portefeuille introuvable');
+    if (Number(wallet.solde) < amount) throw new ApiError(400, 'Solde insuffisant');
 
     await conn.query('UPDATE wallets SET solde = solde - ? WHERE id = ?', [amount, wallet.id]);
     await conn.commit();
@@ -74,11 +78,10 @@ async function externalTransfer({ merchant, opérateurDestination, numéroDestin
     conn.release();
   }
 
-  // Frais AfriPay de 2,5% sur le retrait Marchand, déduit du montant demandé : le wallet marchand
-  // est débité du plein montant (ci-dessus, inchangé) mais seul `montantNetAPayer` part réellement
-  // vers le Mobile Money du marchand (voir jekoService.initierPayout) — le frais reste la marge
-  // d'AfriPay.
-  const frais = calculerFrais(amount, env.business.fraisRetraitMarchandTaux);
+  // Frais AfriPay de 2,5% sur le retrait, déduit du montant demandé : le wallet est débité du plein
+  // montant (ci-dessus, inchangé) mais seul `montantNetAPayer` part réellement vers le Mobile Money
+  // du bénéficiaire (voir jekoService.initierPayout) — le frais reste la marge d'AfriPay.
+  const frais = calculerFrais(amount, env.business.fraisRetraitTaux);
   const montantNetAPayer = round2(amount - frais);
 
   const transaction = await transactionService.recordTransaction({
@@ -99,28 +102,28 @@ async function externalTransfer({ merchant, opérateurDestination, numéroDestin
       montant: montantNetAPayer,
       telephone: numéroDestinataire,
       opérateur: opérateurDestination,
-      nomBeneficiaire: merchant.raison_sociale || merchant.telephone,
+      nomBeneficiaire,
     }));
-    // Mode simulation locale (voir jekoService.js) : l'app Marchand n'affiche pas de lien à ouvrir
-    // pour ce flux (contrairement à la recharge) — le lien est donc juste loggé ici pour celui qui
-    // fait tourner le serveur en dev, à ouvrir soi-même dans un navigateur pour simuler la
-    // confirmation.
+    // Mode simulation locale (voir jekoService.js) : l'app n'affiche pas de lien à ouvrir pour ce
+    // flux (contrairement à la recharge) — le lien est donc juste loggé ici pour celui qui fait
+    // tourner le serveur en dev, à ouvrir soi-même dans un navigateur pour simuler la confirmation.
     if (simulationUrl) console.log(`[jeko:mock] simuler la confirmation du retrait ${transaction.id} -> ${simulationUrl}`);
   } catch (e) {
     // L'initiation elle-même a échoué (pas juste "en attente de confirmation") : rembourser tout
-    // de suite plutôt que de laisser le marchand avec un wallet débité pour rien.
+    // de suite plutôt que de laisser l'auteur du retrait avec un wallet débité pour rien.
     await walletService.creditWallet(wallet.id, amount);
-    await query("UPDATE transactions SET statut = 'échoué' WHERE id = :id", { id: transaction.id });
+    await transactionService.updateStatus(transaction.id, 'échoué');
     throw e;
   }
 
   const id = uuidv4();
   await query(
-    `INSERT INTO transfer_external (id, merchant_id, transaction_id, opérateur_destination, numéro_destinataire, montant, statut, reference_externe)
-     VALUES (:id, :merchantId, :transactionId, :operateurDest, :numeroDest, :montant, 'en_attente', :refExterne)`,
+    `INSERT INTO transfer_external (id, user_id, merchant_id, transaction_id, opérateur_destination, numéro_destinataire, montant, statut, reference_externe)
+     VALUES (:id, :userId, :merchantId, :transactionId, :operateurDest, :numeroDest, :montant, 'en_attente', :refExterne)`,
     {
       id,
-      merchantId: merchant.id,
+      userId: ownerType === 'client' ? ownerId : null,
+      merchantId: ownerType === 'marchand' ? ownerId : null,
       transactionId: transaction.id,
       operateurDest: opérateurDestination,
       numeroDest: numéroDestinataire,
@@ -130,6 +133,16 @@ async function externalTransfer({ merchant, opérateurDestination, numéroDestin
   );
 
   const updatedWallet = await walletService.getWalletById(wallet.id);
+  // Seul débit du fichier qui contourne walletService (verrouillage dédié ci-dessus, voir le
+  // commentaire plus haut) — émission manuelle des deux événements temps réel que creditWallet/
+  // transferBetweenWallets émettent automatiquement pour tous les autres mouvements de solde.
+  realtime.emitToOwner(ownerType, ownerId, 'wallet:updated', { walletId: updatedWallet.id, solde: updatedWallet.solde });
+  realtime.emitToAdmins('admin:wallet_updated', {
+    walletId: updatedWallet.id,
+    ownerId,
+    ownerType,
+    solde: updatedWallet.solde,
+  });
   return { transaction, wallet: updatedWallet };
 }
 
@@ -147,23 +160,29 @@ async function confirmerPayout(tokenPay, { réussi }) {
   const retrait = rows[0];
   if (!retrait) return false;
 
+  // Propriétaire polymorphe (voir database/schema.sql) : exactement une des deux colonnes est
+  // renseignée, selon que c'est un Client ou un Marchand qui a initié ce retrait.
+  const ownerType = retrait.merchant_id ? 'marchand' : 'client';
+  const ownerId = retrait.merchant_id || retrait.user_id;
+
   const nouveauStatut = réussi ? 'réussi' : 'échoué';
   await query('UPDATE transfer_external SET statut = :statut WHERE id = :id', { statut: nouveauStatut, id: retrait.id });
   if (retrait.transaction_id) {
-    await query('UPDATE transactions SET statut = :statut WHERE id = :id', { statut: nouveauStatut, id: retrait.transaction_id });
+    await transactionService.updateStatus(retrait.transaction_id, nouveauStatut);
   }
   if (!réussi) {
-    const wallet = await walletService.getWalletByOwner(retrait.merchant_id, 'marchand');
+    const wallet = await walletService.getWalletByOwner(ownerId, ownerType);
     await walletService.creditWallet(wallet.id, retrait.montant);
   }
 
   // Marchands sans colonne `langue` : titre/contenu par défaut restent français, mais
-  // titreCle/contenuCle permettent à l'app Marchand de retraduire dans sa langue active (même
-  // principe que les autres notifications marchand, voir merchantPaymentController.js).
+  // titreCle/contenuCle permettent à chaque app de retraduire dans sa langue active (même principe
+  // que les autres notifications, voir merchantPaymentController.js) — le Client, lui, a bien une
+  // colonne `langue` mais notificationService.notify la relit lui-même à partir de destinataireId.
   const cle = réussi ? 'notif.payoutConfirmed' : 'notif.payoutFailed';
   await notificationService.notify({
-    destinataireId: retrait.merchant_id,
-    typeDestinataire: 'marchand',
+    destinataireId: ownerId,
+    typeDestinataire: ownerType,
     type: 'transaction',
     titre: t(undefined, `${cle}.title`),
     contenu: t(undefined, `${cle}.body`, { montant: retrait.montant }),

@@ -10,6 +10,7 @@ const notificationService = require('../services/notificationService');
 const securityEventService = require('../services/securityEventService');
 const deviceSessionService = require('../services/deviceSessionService');
 const pinService = require('../services/pinService');
+const realtime = require('../realtime/socket');
 const env = require('../config/env');
 const { t, SUPPORTED_LANGUAGES } = require('../i18n');
 
@@ -82,6 +83,7 @@ async function clientRegister(req, res, next) {
       os,
       refreshToken: tokens.refreshToken,
     });
+    realtime.emitToAdmins('admin:client_new', userService.toPublic(user));
     created(res, { user: userService.toPublic(user), ...tokens });
   } catch (e) {
     next(e);
@@ -381,6 +383,7 @@ async function merchantRegister(req, res, next) {
       os,
       refreshToken: tokens.refreshToken,
     });
+    realtime.emitToAdmins('admin:merchant_new', merchantService.toPublic(merchant));
     created(res, { merchant: merchantService.toPublic(merchant), ...tokens });
   } catch (e) {
     next(e);

@@ -82,10 +82,11 @@ async function transferToAfripayAccount(req, res, next) {
   }
 }
 
-// Marchand -> Mobile Money externe (section 6.4)
+// Client ou Marchand -> Mobile Money externe (section 6.4 ; ouvert au Client au même titre que le
+// Marchand — seul le wallet débité et la ligne de rattachement (transfer_external.user_id vs
+// merchant_id) changent, voir transferService.externalTransfer).
 async function transferToExternal(req, res, next) {
   try {
-    if (req.auth.type !== 'marchand') throw new ApiError(403, 'Réservé aux comptes Marchand');
     const { opérateurDestination, numéroDestinataire, pin } = req.body;
     if (!opérateurDestination || !numéroDestinataire) {
       throw new ApiError(400, 'opérateurDestination et numéroDestinataire sont requis');
@@ -93,9 +94,20 @@ async function transferToExternal(req, res, next) {
     const montant = toValidAmount(req.body.montant, { max: env.business.maxTransactionFcfa });
     await assertPinIfNeeded(req.auth, montant, pin, req);
 
-    const merchant = await merchantService.findById(req.auth.id);
+    const ownerType = req.auth.type === 'marchand' ? 'marchand' : 'client';
+    let nomBeneficiaire;
+    if (ownerType === 'marchand') {
+      const merchant = await merchantService.findById(req.auth.id);
+      nomBeneficiaire = merchant?.raison_sociale || merchant?.telephone;
+    } else {
+      const client = await userService.findById(req.auth.id);
+      nomBeneficiaire = client ? `${client.prenom} ${client.nom}`.trim() : undefined;
+    }
+
     const result = await transferService.externalTransfer({
-      merchant,
+      ownerId: req.auth.id,
+      ownerType,
+      nomBeneficiaire,
       opérateurDestination,
       numéroDestinataire,
       montant,
@@ -106,11 +118,12 @@ async function transferToExternal(req, res, next) {
   }
 }
 
-// Taux de frais AfriPay sur le retrait Marchand (voir transferService.externalTransfer) —
-// permet à l'app de calculer et d'afficher un aperçu ("vous recevrez X") avant confirmation.
+// Taux de frais AfriPay sur le retrait vers Mobile Money externe (voir
+// transferService.externalTransfer) — permet à l'app de calculer et d'afficher un aperçu ("vous
+// recevrez X") avant confirmation. Même taux pour Client et Marchand.
 async function fraisRetrait(req, res, next) {
   try {
-    ok(res, { taux: env.business.fraisRetraitMarchandTaux });
+    ok(res, { taux: env.business.fraisRetraitTaux });
   } catch (e) {
     next(e);
   }

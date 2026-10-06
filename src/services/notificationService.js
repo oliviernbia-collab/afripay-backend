@@ -1,6 +1,7 @@
 const { v4: uuidv4 } = require('uuid');
 const { query } = require('../config/db');
 const { normalizeDateRange } = require('../utils/dateRange');
+const realtime = require('../realtime/socket');
 
 // `titre`/`contenu` : rendu français par défaut, pour le back-office web (outil interne, une
 // seule langue) et comme repli mobile si aucune clé n'est fournie (message admin composé
@@ -8,11 +9,16 @@ const { normalizeDateRange } = require('../utils/dateRange');
 // retraduire la notification dans la langue active à l'AFFICHAGE plutôt que figée à la création
 // (voir database/schema.sql) — `params` ne doit contenir que des valeurs brutes, jamais du texte
 // déjà traduit (la sous-traduction, ex. un statut, se fait aussi côté client).
+//
+// Point de passage UNIQUE pour toute notification créée dans l'app (transfert reçu, retrait
+// confirmé/échoué, KYC décidé, bienvenue...) : émettre l'événement temps réel ICI, plutôt que dans
+// chaque appelant, suffit donc à les couvrir tous d'un coup (voir realtime/socket.js).
 async function notify({ destinataireId, typeDestinataire, type, titre, contenu, titreCle, contenuCle, params }) {
   const id = uuidv4();
+  const dateCreation = new Date();
   await query(
-    `INSERT INTO notifications (id, destinataire_id, type_destinataire, type, titre, contenu, titre_cle, contenu_cle, params)
-     VALUES (:id, :destinataireId, :typeDestinataire, :type, :titre, :contenu, :titreCle, :contenuCle, :params)`,
+    `INSERT INTO notifications (id, destinataire_id, type_destinataire, type, titre, contenu, titre_cle, contenu_cle, params, date_creation)
+     VALUES (:id, :destinataireId, :typeDestinataire, :type, :titre, :contenu, :titreCle, :contenuCle, :params, :dateCreation)`,
     {
       id,
       destinataireId,
@@ -23,8 +29,20 @@ async function notify({ destinataireId, typeDestinataire, type, titre, contenu, 
       titreCle: titreCle || null,
       contenuCle: contenuCle || null,
       params: params ? JSON.stringify(params) : null,
+      dateCreation,
     }
   );
+  realtime.emitToOwner(typeDestinataire, destinataireId, 'notification:new', {
+    id,
+    type,
+    titre,
+    contenu,
+    titre_cle: titreCle || null,
+    contenu_cle: contenuCle || null,
+    params: params || null,
+    lu: 0,
+    date_creation: dateCreation.toISOString(),
+  });
   return id;
 }
 

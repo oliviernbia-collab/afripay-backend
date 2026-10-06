@@ -1,7 +1,9 @@
+const http = require('http');
 const app = require('./app');
 const env = require('./config/env');
 const { pool } = require('./config/db');
 const palmVisionService = require('./services/palmVisionService');
+const realtime = require('./realtime/socket');
 
 async function start() {
   try {
@@ -12,8 +14,14 @@ async function start() {
     process.exit(1);
   }
 
-  app.listen(env.port, () => {
-    console.log(`[AfriPay backend] En écoute sur http://localhost:${env.port} (${env.nodeEnv})`);
+  // Serveur HTTP explicite (plutôt que app.listen directement) : Socket.IO doit s'attacher au même serveur
+  // pour partager le port 4000 (voir realtime/socket.js) — même mécanique que `GET/POST` d'Express,
+  // juste avec un protocole supplémentaire géré par-dessus la même connexion TCP.
+  const httpServer = http.createServer(app);
+  realtime.init(httpServer);
+
+  httpServer.listen(env.port, () => {
+    console.log(`[AfriPay backend] En écoute sur http://localhost:${env.port} (${env.nodeEnv}) — temps réel actif`);
   });
 
   // Précharge le détecteur de main (reconnaissance de paume) en tâche de fond : ~3-4s la première
