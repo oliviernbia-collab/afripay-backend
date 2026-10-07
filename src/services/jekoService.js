@@ -130,6 +130,21 @@ async function initierPayin({ montant, fournisseur, referenceInterne }) {
   return { token: referenceInterne, paymentUrl: json.redirectUrl };
 }
 
+// Jèko exige le bénéficiaire mobile money d'un retrait en format international (+225...) — un
+// numéro local (0554183378, format saisi par l'utilisateur dans l'app et conservé tel quel partout
+// ailleurs côté AfriPay) est rejeté par leur validation interne (erreur opaque "request-validation-
+// error: Request invalid", non détectée par le schéma OpenAPI). Confirmé en reproduisant l'appel :
+// échoue en local, réussit en +225. Côte d'Ivoire uniquement (seuls opérateurs supportés, voir
+// PAYMENT_METHOD_BY_FOURNISSEUR) : Jèko veut le numéro LOCAL COMPLET (10 chiffres, 0 initial compris)
+// simplement préfixé par +225 — ex. "0554183378" -> "+2250554183378" (PAS "+225554183378", qui a été
+// testé et rejeté : retirer le 0 initial casse la validation, malgré le format E.164 habituel).
+function toInternational(telephone) {
+  const digits = String(telephone).replace(/[\s.-]/g, '');
+  if (digits.startsWith('+')) return digits;
+  if (digits.startsWith('00')) return `+${digits.slice(2)}`;
+  return `+225${digits}`;
+}
+
 // Retrait (payout) — `montant` ici est le montant NET déjà envoyé par transferService
 // (montant demandé par le marchand moins le frais AfriPay de 2,5%, voir externalTransfer) : c'est
 // ce qui part réellement vers le Mobile Money du bénéficiaire. Forme confirmée via
@@ -162,7 +177,7 @@ async function initierPayout({ montant, telephone, opérateur, nomBeneficiaire }
       reference,
       name: nomBeneficiaire || telephone,
       paymentMethod,
-      identifier: { reference: telephone },
+      identifier: { reference: toInternational(telephone) },
     }),
   });
   const json = await res.json().catch(() => null);
