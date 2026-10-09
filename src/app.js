@@ -58,7 +58,7 @@ app.use(
 app.use(express.json({ limit: '5mb', verify: (req, res, buf) => { req.rawBody = buf; } }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
-app.use(morgan('dev'));
+app.use(morgan(env.nodeEnv === 'production' ? 'combined' : 'dev'));
 
 const globalLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 600 });
 app.use('/api', globalLimiter);

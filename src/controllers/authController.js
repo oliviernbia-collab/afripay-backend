@@ -185,11 +185,16 @@ async function clientRequestResetOtp(req, res, next) {
     if (!telephone || !objet) throw new ApiError(400, "telephone et type ('pin' ou 'password') sont requis");
 
     const user = await userService.findByPhone(telephone);
-    if (!user) throw new ApiError(404, 'Aucun compte trouvé avec ce numéro');
-    // Un compte gelé ne doit pas pouvoir être récupéré en self-service par OTP : le numéro
-    // (et donc l'OTP par SMS) peut être entre les mains du voleur si le téléphone est perdu/volé
-    // avec sa carte SIM — seul un admin peut lever le blocage après revérification d'identité.
-    if (user.compte_bloque) throw new ApiError(403, 'Compte bloqué. Contactez le support AfriPay pour le débloquer.');
+    // Réponse générique dans tous les cas (compte inexistant, compte gelé, ou compte valide) :
+    // renvoyer un 404/403 distinct ici permettrait à un attaquant d'énumérer les numéros de
+    // téléphone possédant un compte AfriPay. Un compte gelé ne doit de toute façon pas pouvoir
+    // être récupéré en self-service par OTP : le numéro (et donc l'OTP par SMS) peut être entre
+    // les mains du voleur si le téléphone est perdu/volé avec sa carte SIM — seul un admin peut
+    // lever le blocage après revérification d'identité.
+    if (!user || user.compte_bloque) {
+      ok(res, { sent: true });
+      return;
+    }
 
     const result = await otpService.generateOtp(telephone, objet);
     ok(res, { sent: true, devCode: result.devCode });
@@ -206,11 +211,15 @@ async function clientResetPin(req, res, next) {
     if (!telephone || !otp) throw new ApiError(400, 'telephone et otp sont requis');
     if (!pin || !/^\d{4,6}$/.test(pin)) throw new ApiError(400, 'Le code PIN doit contenir 4 à 6 chiffres');
 
+    // L'OTP est vérifié avant toute révélation de l'existence/l'état du compte : un numéro
+    // inexistant ou gelé n'a jamais eu d'OTP généré (voir clientRequestResetOtp), donc
+    // otpService.verifyOtp échoue avec le même message générique que pour un compte valide qui
+    // n'a simplement pas de code en attente — pas d'oracle d'énumération sur cette route.
+    await otpService.verifyOtp(telephone, otp, RESET_OBJET.pin);
+
     const user = await userService.findByPhone(telephone);
     if (!user) throw new ApiError(404, 'Aucun compte trouvé avec ce numéro');
     if (user.compte_bloque) throw new ApiError(403, 'Compte bloqué. Contactez le support AfriPay pour le débloquer.');
-
-    await otpService.verifyOtp(telephone, otp, RESET_OBJET.pin);
 
     const pinHash = await hash(pin);
     await userService.setPin(user.id, pinHash);
@@ -240,11 +249,12 @@ async function clientResetPassword(req, res, next) {
       throw new ApiError(400, 'Le nouveau mot de passe doit contenir au moins 6 caractères');
     }
 
+    // Voir clientResetPin : OTP vérifié avant toute révélation de l'existence/l'état du compte.
+    await otpService.verifyOtp(telephone, otp, RESET_OBJET.password);
+
     const user = await userService.findByPhone(telephone);
     if (!user) throw new ApiError(404, 'Aucun compte trouvé avec ce numéro');
     if (user.compte_bloque) throw new ApiError(403, 'Compte bloqué. Contactez le support AfriPay pour le débloquer.');
-
-    await otpService.verifyOtp(telephone, otp, RESET_OBJET.password);
 
     const motDePasseHash = await hash(motDePasse);
     await userService.setPassword(user.id, motDePasseHash);
@@ -491,8 +501,12 @@ async function merchantRequestResetOtp(req, res, next) {
     if (!telephone || !objet) throw new ApiError(400, "telephone et type ('pin' ou 'password') sont requis");
 
     const merchant = await merchantService.findByPhone(telephone);
-    if (!merchant) throw new ApiError(404, 'Aucun compte trouvé avec ce numéro');
-    if (merchant.compte_bloque) throw new ApiError(403, 'Compte bloqué. Contactez le support AfriPay pour le débloquer.');
+    // Réponse générique dans tous les cas, voir clientRequestResetOtp pour la justification
+    // (anti-énumération de comptes).
+    if (!merchant || merchant.compte_bloque) {
+      ok(res, { sent: true });
+      return;
+    }
 
     const result = await otpService.generateOtp(telephone, objet);
     ok(res, { sent: true, devCode: result.devCode });
@@ -508,11 +522,12 @@ async function merchantResetPin(req, res, next) {
     if (!telephone || !otp) throw new ApiError(400, 'telephone et otp sont requis');
     if (!pin || !/^\d{4,6}$/.test(pin)) throw new ApiError(400, 'Le code PIN doit contenir 4 à 6 chiffres');
 
+    // Voir clientResetPin : OTP vérifié avant toute révélation de l'existence/l'état du compte.
+    await otpService.verifyOtp(telephone, otp, RESET_OBJET_MARCHAND.pin);
+
     const merchant = await merchantService.findByPhone(telephone);
     if (!merchant) throw new ApiError(404, 'Aucun compte trouvé avec ce numéro');
     if (merchant.compte_bloque) throw new ApiError(403, 'Compte bloqué. Contactez le support AfriPay pour le débloquer.');
-
-    await otpService.verifyOtp(telephone, otp, RESET_OBJET_MARCHAND.pin);
 
     const pinHash = await hash(pin);
     await merchantService.setPin(merchant.id, pinHash);
@@ -540,11 +555,12 @@ async function merchantResetPassword(req, res, next) {
       throw new ApiError(400, 'Le nouveau mot de passe doit contenir au moins 6 caractères');
     }
 
+    // Voir clientResetPin : OTP vérifié avant toute révélation de l'existence/l'état du compte.
+    await otpService.verifyOtp(telephone, otp, RESET_OBJET_MARCHAND.password);
+
     const merchant = await merchantService.findByPhone(telephone);
     if (!merchant) throw new ApiError(404, 'Aucun compte trouvé avec ce numéro');
     if (merchant.compte_bloque) throw new ApiError(403, 'Compte bloqué. Contactez le support AfriPay pour le débloquer.');
-
-    await otpService.verifyOtp(telephone, otp, RESET_OBJET_MARCHAND.password);
 
     const motDePasseHash = await hash(motDePasse);
     await merchantService.setPassword(merchant.id, motDePasseHash);

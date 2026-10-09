@@ -85,7 +85,19 @@ async function logAttempt({ merchantId, userId, resultat, motif, ip }) {
   );
 }
 
+// Anti brute-force sur le repli QR, même principe que recognizeByPhoto : un palm_code valide a
+// 72 bits d'entropie (quasi impossible à deviner), mais sans ce verrou un script pourrait tenter
+// des codes en boucle sans aucun coût ni limite — défense en profondeur si cette hypothèse
+// d'entropie venait à être affaiblie (code plus court, RNG compromis, etc.).
 async function verifyByPalmCode(palmCode, { merchantId, ip } = {}) {
+  const recentFailures = await countRecentPalmCodeFailures(merchantId, env.business.palmLockoutMinutes);
+  if (recentFailures >= env.business.palmMaxFailedAttempts) {
+    throw new ApiError(
+      429,
+      `Trop d'échecs récents. Réessayez dans ${env.business.palmLockoutMinutes} minutes ou utilisez la reconnaissance photo.`
+    );
+  }
+
   const userId = await findUserIdByPalmCode(palmCode);
   if (!userId) {
     await logAttempt({ merchantId, userId: null, resultat: 'echec', motif: 'palm_code inconnu ou inactif', ip });
@@ -95,19 +107,27 @@ async function verifyByPalmCode(palmCode, { merchantId, ip } = {}) {
   return userId;
 }
 
-// Échecs de reconnaissance récents (hors rejets qualité, voir motif ci-dessous) pour CE marchand —
+// Échecs récents d'un type donné (hors rejets qualité, voir motif ci-dessous) pour CE marchand —
 // base du blocage anti brute-force. Même principe que pinService.assertNotLockedOut/
 // securityEventService.countRecentFailures, mais scopé au marchand plutôt qu'au téléphone : avant
 // reconnaissance, on ne sait justement pas encore quel compte client est visé.
-async function countRecentRecognitionFailures(merchantId, sinceMinutes) {
+async function countRecentFailuresByMotif(merchantId, sinceMinutes, motifPattern) {
   if (!merchantId) return 0;
   const rows = await query(
     `SELECT COUNT(*) AS total FROM biometric_scan_logs
-     WHERE merchant_id = :merchantId AND resultat = 'echec' AND motif LIKE 'reconnaissance photo:%'
+     WHERE merchant_id = :merchantId AND resultat = 'echec' AND motif LIKE :motifPattern
        AND date_heure >= DATE_SUB(NOW(), INTERVAL :sinceMinutes MINUTE)`,
-    { merchantId, sinceMinutes }
+    { merchantId, sinceMinutes, motifPattern }
   );
   return Number(rows[0]?.total || 0);
+}
+
+async function countRecentRecognitionFailures(merchantId, sinceMinutes) {
+  return countRecentFailuresByMotif(merchantId, sinceMinutes, 'reconnaissance photo:%');
+}
+
+async function countRecentPalmCodeFailures(merchantId, sinceMinutes) {
+  return countRecentFailuresByMotif(merchantId, sinceMinutes, 'palm_code%');
 }
 
 // Identification 1:N (photo prise par le marchand à l'encaissement) : extrait le gabarit de la

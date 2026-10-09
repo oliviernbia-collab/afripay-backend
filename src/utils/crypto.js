@@ -2,7 +2,7 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 
 async function hash(value) {
-  const salt = await bcrypt.genSalt(10);
+  const salt = await bcrypt.genSalt(12);
   return bcrypt.hash(value, salt);
 }
 
@@ -11,9 +11,11 @@ async function compare(value, hashed) {
   return bcrypt.compare(value, hashed);
 }
 
+// crypto.randomInt (CSPRNG) plutôt que Math.random() : ces chiffres servent à des codes OTP,
+// un secret de sécurité qui ne doit pas dépendre d'un PRNG prévisible.
 function randomDigits(length) {
   let out = '';
-  for (let i = 0; i < length; i += 1) out += Math.floor(Math.random() * 10);
+  for (let i = 0; i < length; i += 1) out += crypto.randomInt(0, 10);
   return out;
 }
 
